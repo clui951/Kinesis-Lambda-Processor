@@ -1,5 +1,6 @@
 # kinesis-lambda-processor
-Test repo for a Lambda Processor that consumes a Kinesis stream
+Test repo for a Lambda Processor that consumes a Kinesis stream. 
+Also included RDS connection capability.
 
 ### To Setup Virtual Environment
 Create a virtual environment and source it  
