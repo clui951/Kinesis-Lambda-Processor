@@ -9,7 +9,7 @@ import psycopg2
 from sqlalchemy import create_engine, Table, MetaData
 
 from config import db_config 
-from helper.database_helper import generate_expected_data_temp_table
+from helper.database_helper import create_new_engine, generate_expected_data_temp_table
 
 ##### below setup will load on every new Execution Context container #####
 ##### 'cold' functions will setup a new container
@@ -25,12 +25,10 @@ db_endpoint  = db_config.db_endpoint
 db_username = db_config.db_username
 db_password = db_config.db_password
 db_name = db_config.db_name
-
-# db connection engine
 db_postgres_string = "postgres://" + db_username + ":" + db_password + "@" + db_endpoint + "/" + db_name
+
 logger.info("Creating new database engine: " + db_postgres_string)
-engine = create_engine(db_postgres_string)
-logger.info("Database engine created")
+engine = create_new_engine(db_postgres_string)
 
 # Expected messages handling
 PROCESSING_ID_TYPE_JSON_HEADER = 'processing_id_type'
@@ -58,17 +56,16 @@ def lambda_handler(event, context):
 
     return 'Successfully processed {} records.'.format(len(event['Records']))
 
-def get_connection():
-    return engine.connect()
-
 def process_processing_id(processing_id_type, processing_id):
     connection = get_connection()
     with connection.begin() as transaction:
-        temp_table = generate_expected_data_temp_table(processing_id_type, processing_id)
+        temp_table = generate_expected_data_temp_table(processing_id_type, processing_id, connection)
     
         # select from table
         result = connection.execute(temp_table.select())
         print(result.fetchall()[0])
 
+def get_connection():
+    return engine.connect()
 
 
