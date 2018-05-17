@@ -1,15 +1,17 @@
 import base64
 import json
 import logging
+import os
 import sys
 import traceback
 
-sys.path.insert(0, "thirdpartylib/")
+if os.getenv('env') in ['production', 'staging']:
+    sys.path.insert(0, "thirdpartylib/")
 import psycopg2
-from sqlalchemy import create_engine, Table, MetaData
 
 from config import db_config 
-from helper.database_helper import create_new_engine, generate_expected_data_temp_table
+from helper.database_helper import (create_new_engine, generate_expected_data_temp_table, set_lock_timeout_for_transaction, 
+    calculate_diffs_against_output_table)
 
 ##### below setup will load on every new Execution Context container #####
 ##### 'cold' functions will setup a new container
@@ -59,13 +61,26 @@ def lambda_handler(event, context):
 def process_processing_id(processing_id_type, processing_id):
     connection = get_connection()
     with connection.begin() as transaction:
-        temp_table = generate_expected_data_temp_table(processing_id_type, processing_id, connection)
-    
+        temp_table = generate_expected_data_temp_table(connection, processing_id_type, processing_id)
+
+        set_lock_timeout_for_transaction(connection)
+
+        calculate_diffs_against_output_table(connection, temp_table)
+
+
         # select from table
-        result = connection.execute(temp_table.select())
-        print(result.fetchall()[0])
+        # result = connection.execute(temp_table.select())
+        # print(result.fetchall()[0])
+        print("FIN")
 
 def get_connection():
     return engine.connect()
+
+
+
+# process_processing_id('li_code', 'LI-549905')
+process_processing_id('import_id', '1468224')
+
+
 
 
