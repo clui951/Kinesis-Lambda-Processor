@@ -50,19 +50,28 @@ OUTPUT_SCHEMA = 'snoopy'
 OUTPUT_TABLE = 'delivery_by_flight_creative_day'
 def calculate_diffs_against_output_table(connection, temp_table):
     flight_ids_affected = [row[temp_table.c.flight_id] for row in select([temp_table.c.flight_id]).distinct().execute().fetchall()]
+    flight_ids_affected_string = "(" + ",".join(["'" + str(id) + "'" for id in flight_ids_affected]) + ")"
 
     metadata = MetaData(connection, reflect=True, schema=OUTPUT_SCHEMA)
     output_table = Table(OUTPUT_TABLE, metadata, autoload=True, autoload_with=connection)
 
+    # do deletions
     deleted_query = """UPDATE {0} output
-                SET is_deleted = TRUE
-                WHERE NOT EXISTS (
-                    SELECT flight_id, creative_id, date FROM {1} temp WHERE output.flight_id = temp.flight_id AND output.creative_id = temp.creative_id AND output.date = temp.date AND output.is_deleted = FALSE
-                ) RETURNING flight_id, creative_id, date;""".format(output_table.schema + "." + output_table.name, temp_table.name)
-    print(deleted_query)
+                        SET is_deleted = TRUE
+                        WHERE flight_id IN {1} AND NOT EXISTS (
+                            SELECT flight_id, creative_id, date FROM {2} temp
+                            WHERE output.flight_id = temp.flight_id AND output.creative_id = temp.creative_id AND output.date = temp.date AND output.is_deleted = FALSE
+                        ) RETURNING flight_id, creative_id, date;""".format(output_table.schema + "." + output_table.name, flight_ids_affected_string, temp_table.name)
 
-    deleted = connection.execute(deleted_query)
-    print([dict(row) for row in deleted.fetchall()])
-    print("executed")
+    deleted = [dict(row) for row in connection.execute(deleted_query).fetchall()]
 
-    # temp_table.select()
+    # do insertions
+    insert_query = """
+        INSERT INTO {0} (date, flight_id, creative_id, impressions, clicks, provider, time_zone, updated_at, is_deleted) (
+            SELECT temp.date, temp.flight_id, temp.creative_id, temp.impressions, temp.clicks, temp.provider, temp.time_zone, temp.updated_at, temp.is_deleted
+            FROM {1} temp
+            LEFT JOIN {0} output ON output.flight_id = temp.flight_id AND output.creative_id = temp.creative_id AND output.date = temp.date
+            WHERE output.flight_id IS NULL
+        ) RETURNING *;""".format(output_table.schema + "." + output_table.name, temp_table.name)
+
+    inserted = [dict(row) for row in connection.execute(insert_query).fetchall()]
