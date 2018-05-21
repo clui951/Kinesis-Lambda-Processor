@@ -8,10 +8,10 @@ import traceback
 if os.getenv('env') in ['production', 'staging']:
     sys.path.insert(0, "thirdpartylib/")
 import psycopg2
+from sqlalchemy.exc import OperationalError
 
 from config import db_config 
-from helper.database_helper import (create_new_engine, generate_expected_data_temp_table, set_lock_timeout_for_transaction, 
-    calculate_diffs_against_output_table)
+from helper.database_helper import (create_new_engine, process_processing_id)
 
 ##### below setup will load on every new Execution Context container #####
 ##### 'cold' functions will setup a new container
@@ -36,6 +36,9 @@ engine = create_new_engine(db_postgres_string)
 PROCESSING_ID_TYPE_JSON_HEADER = 'processing_id_type'
 PROCESSING_ID_JSON_HEADER = 'processing_id'
 
+LOCK_ERROR_MESSAGE = 'lock timeout'
+MAXIMUM_RETRY_ON_DEADLOCK = 3
+
 def lambda_handler(event, context):    
     # wrap all processing within try/except because we don't want failures to halt further processing
     try:
@@ -50,37 +53,25 @@ def lambda_handler(event, context):
             processing_id_type = json_payload[PROCESSING_ID_TYPE_JSON_HEADER]
             processing_id = json_payload[PROCESSING_ID_JSON_HEADER]
 
-            process_processing_id(processing_id_type, processing_id)
+            # attempt to process, retrying up to MAXIMUM_RETRY_ON_DEADLOCK times
+            retries_left = MAXIMUM_RETRY_ON_DEADLOCK
+            while retries_left >= 0:
+                try:
+                    process_processing_id(get_connection(), processing_id_type, processing_id)
+                    break;
+                except OperationalError as e:
+                    if LOCK_ERROR_MESSAGE in traceback.format_exc() and retries_left > 0:
+                        logger.warn('Lock timeout trying to process {0}. Number of attempts left: {1}'.format(decoded_payload, retries_left))
+                    else:
+                        raise
+                retries_left -= 1
     
     except Exception as e:
+        print("logger.error below on traceback.format_exc")
         logger.error(traceback.format_exc())
         return 'Failed to process {} records'.format(len(event['Records']))
 
     return 'Successfully processed {} records.'.format(len(event['Records']))
 
-def process_processing_id(processing_id_type, processing_id):
-    connection = get_connection()
-    with connection.begin() as transaction:
-        temp_table = generate_expected_data_temp_table(connection, processing_id_type, processing_id)
-
-        set_lock_timeout_for_transaction(connection)
-
-        calculate_diffs_against_output_table(connection, temp_table)
-
-
-        # select from table
-        # result = connection.execute(temp_table.select())
-        # print(result.fetchall()[0])
-        print("FIN")
-
 def get_connection():
     return engine.connect()
-
-
-
-# process_processing_id('li_code', 'LI-549905')
-process_processing_id('import_id', '1468224')
-
-
-
-

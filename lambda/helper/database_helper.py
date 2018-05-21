@@ -9,6 +9,19 @@ logger.setLevel(logging.INFO)
 def create_new_engine(db_postgres_string):
     return create_engine(db_postgres_string)
 
+def process_processing_id(connection, processing_id_type, processing_id):
+    with connection.begin() as transaction:
+        set_lock_timeout_for_transaction(connection)
+
+        temp_table = generate_expected_data_temp_table(connection, processing_id_type, processing_id)
+        deleted, inserted = calculate_diffs_against_output_table(connection, temp_table)
+
+# change lock timeout for current transaction
+LOCK_TIMEOUT_MS = 3000
+LOCK_TIMEOUT_QUERY = "SET lock_timeout = {};".format(LOCK_TIMEOUT_MS)
+def set_lock_timeout_for_transaction(connection):
+    connection.execute(LOCK_TIMEOUT_QUERY)
+
 # generating expected data temp table
 TEMP_TABLE_BASE_NAME = 'expected_temp_table_{}'
 PROCESSING_TYPE = {
@@ -27,7 +40,6 @@ EXPECTED_DATA_BASE_QUERY = (
     'group by rd.date, m.li_code, m.creative_rtb_id '
     'order by date desc;'
 )
-
 def generate_expected_data_temp_table(connection, processing_id_type, processing_id):
     temp_table_name = TEMP_TABLE_BASE_NAME.format(processing_id.replace("-","")).lower()
     where_clause_string = PROCESSING_TYPE[processing_id_type].format(processing_id)
@@ -38,12 +50,6 @@ def generate_expected_data_temp_table(connection, processing_id_type, processing
 
     metadata = MetaData(connection, reflect=True)
     return Table(temp_table_name, metadata, autoload=True, autoload_with=connection)
-    
-# change lock timeout for current transaction
-LOCK_TIMEOUT_MS = 3000
-LOCK_TIMEOUT_QUERY = "SET lock_timeout = {};".format(LOCK_TIMEOUT_MS)
-def set_lock_timeout_for_transaction(connection):
-    connection.execute(LOCK_TIMEOUT_QUERY)
 
 # calculate diffs against final results table
 OUTPUT_SCHEMA = 'snoopy'
@@ -55,12 +61,22 @@ def calculate_diffs_against_output_table(connection, temp_table):
     metadata = MetaData(connection, reflect=True, schema=OUTPUT_SCHEMA)
     output_table = Table(OUTPUT_TABLE, metadata, autoload=True, autoload_with=connection)
 
+    # lock rows; lock timeout should be caught, and force a retry
+    lock_rows_query = """
+        SELECT 1
+        FROM {0}
+        WHERE flight_id IN {1}
+        FOR UPDATE;
+    """.format(output_table.schema + "." + output_table.name, flight_ids_affected_string)
+    connection.execute(lock_rows_query)
+
     # do deletions
     deleted_query = """
         UPDATE {0} output
         SET is_deleted = TRUE
         WHERE flight_id IN {1} AND NOT EXISTS (
-            SELECT flight_id, creative_id, date FROM {2} temp
+            SELECT flight_id, creative_id, date
+            FROM {2} temp
             WHERE output.flight_id = temp.flight_id AND output.creative_id = temp.creative_id AND output.date = temp.date AND output.is_deleted = FALSE
         ) RETURNING flight_id, creative_id, date;""".format(output_table.schema + "." + output_table.name, flight_ids_affected_string, temp_table.name)
     deleted = [dict(row) for row in connection.execute(deleted_query).fetchall()]
