@@ -23,6 +23,7 @@ __Note:__ First makesure you have sourced your virtual environment (see above)
 ```
 $ cd lambda/
 $ python -m pytest tests/
+$ python -m pytest tests/ -s  # To see stdout
 ```
 
 #### Why is Psycopg2 Dependency Already Included

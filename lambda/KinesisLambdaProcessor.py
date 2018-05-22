@@ -10,8 +10,8 @@ if os.getenv('env') in ['production', 'staging']:
 import psycopg2
 from sqlalchemy.exc import OperationalError
 
-from config import db_config 
-from helper.database_helper import (create_new_engine, process_processing_id)
+from config import db_config
+from helpers.database_helper import (create_new_engine, process_processing_id)
 
 ##### below setup will load on every new Execution Context container #####
 ##### 'cold' functions will setup a new container
