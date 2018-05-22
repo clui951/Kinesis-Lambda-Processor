@@ -11,7 +11,7 @@ import psycopg2
 from sqlalchemy.exc import OperationalError
 
 from config import db_config
-from helpers.database_helper import (create_new_engine, process_processing_id)
+from helpers.database_helper import (create_new_engine, process_processing_id, LOCK_ERROR_MESSAGE)
 
 ##### below setup will load on every new Execution Context container #####
 ##### 'cold' functions will setup a new container
@@ -36,7 +36,6 @@ engine = create_new_engine(db_postgres_string)
 PROCESSING_ID_TYPE_JSON_HEADER = 'processing_id_type'
 PROCESSING_ID_JSON_HEADER = 'processing_id'
 
-LOCK_ERROR_MESSAGE = 'lock timeout'
 MAXIMUM_RETRY_ON_DEADLOCK = 3
 
 def lambda_handler(event, context):    

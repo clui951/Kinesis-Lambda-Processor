@@ -19,6 +19,7 @@ def process_processing_id(connection, processing_id_type, processing_id):
 # change lock timeout for current transaction
 LOCK_TIMEOUT_MS = 3000
 LOCK_TIMEOUT_QUERY = "SET lock_timeout = {};".format(LOCK_TIMEOUT_MS)
+LOCK_ERROR_MESSAGE = 'lock timeout'
 def set_lock_timeout_for_transaction(connection):
     connection.execute(LOCK_TIMEOUT_QUERY)
 
