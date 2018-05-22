@@ -14,7 +14,7 @@ def process_processing_id(connection, processing_id_type, processing_id):
         set_lock_timeout_for_transaction(connection)
 
         temp_table = generate_expected_data_temp_table(connection, processing_id_type, processing_id)
-        deleted, inserted = calculate_diffs_against_output_table(connection, temp_table)
+        deleted, inserted = calculate_diffs_and_writes_to_output_table(connection, temp_table)
 
 # change lock timeout for current transaction
 LOCK_TIMEOUT_MS = 3000
@@ -54,7 +54,7 @@ def generate_expected_data_temp_table(connection, processing_id_type, processing
 # calculate diffs against final results table
 OUTPUT_SCHEMA = 'snoopy'
 OUTPUT_TABLE = 'delivery_by_flight_creative_day'
-def calculate_diffs_against_output_table(connection, temp_table):
+def calculate_diffs_and_writes_to_output_table(connection, temp_table):
     flight_ids_affected = [row[temp_table.c.flight_id] for row in select([temp_table.c.flight_id]).distinct().execute().fetchall()]
     flight_ids_affected_string = "(" + ",".join(["'" + str(id) + "'" for id in flight_ids_affected]) + ")"
 

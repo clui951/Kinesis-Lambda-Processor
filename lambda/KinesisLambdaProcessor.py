@@ -67,7 +67,6 @@ def lambda_handler(event, context):
                 retries_left -= 1
     
     except Exception as e:
-        print("logger.error below on traceback.format_exc")
         logger.error(traceback.format_exc())
         return 'Failed to process {} records'.format(len(event['Records']))
 
