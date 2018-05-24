@@ -24,6 +24,7 @@ __Note:__ First makesure you have sourced your virtual environment (see above)
 $ cd lambda/
 $ python -m pytest tests/
 $ python -m pytest tests/ -s -v  # To see stdout and details
+$ python -m pytest tests/path/to/test.py::test_name -s -v # To run specific test in file
 ```
 
 #### Why is Psycopg2 Dependency Already Included
