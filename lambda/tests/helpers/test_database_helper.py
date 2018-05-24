@@ -103,33 +103,31 @@ def test_process_processing_id_flight_id_with_new_data_populate_new_data(connect
 	results = select_all_from_output_table(connection)
 	assert get_standard_output_data() == results
 
-def test_process_processing_id_import_id_with_deleted_vendor_ids_maps_populate_marks_as_deleted(connection):
+def test_process_processing_id_flight_ids_with_deleted_vendor_ids_maps_populate_marks_as_deleted(connection):
+	truncate_output_table(connection)
 	connection.execute("UPDATE vendor_ids.maps SET is_deleted = TRUE WHERE li_code = 'LI-123456';")
 
-	h.process_processing_id(connection, 'import_id', '1')
+	h.process_processing_id(connection, 'li_code', 'LI-123456')
+	h.process_processing_id(connection, 'li_code', 'LI-7891011')
 
 	results = select_all_from_output_table(connection)
-	expected_results = get_standard_output_data()
-	for tup in expected_results:
+	standard_results = get_standard_output_data()
+	expected_results = set()
+	for tup in standard_results:
 		if tup[1] == '123456':
-			tuplst = list(tup)
-			tuplst[-1] = True
-			tup = tuple(tuplst)
+			continue
+		expected_results.add(tup)
 	assert  expected_results == results
 
-def test_process_processing_id_import_id_with_no_resulting_data_populate_deletes_all_corresponding(connection):
+def test_process_processing_id_import_id_with_no_resulting_data_populate_nothing(connection):
 	# if no resulting data generated from upstream, previously corresponding data must be deleted
+	truncate_output_table(connection)
 	connection.execute("UPDATE vendor_ids.maps SET is_deleted = TRUE;")
 
 	h.process_processing_id(connection, 'import_id', '1')
 
 	results = select_all_from_output_table(connection)
-	expected_results = get_standard_output_data()
-	for tup in expected_results:
-		tuplst = list(tup)
-		tuplst[-1] = True
-		tup = tuple(tuplst)
-	assert  expected_results == results
+	assert  set() == results
 
 def test_process_processing_id_flight_id_with_no_resulting_data_populate_deletes_all_corresponding(connection):
 	# if no resulting data generated from upstream, previously corresponding data must be deleted
@@ -138,32 +136,36 @@ def test_process_processing_id_flight_id_with_no_resulting_data_populate_deletes
 	h.process_processing_id(connection, 'li_code', 'LI-123456')
 
 	results = select_all_from_output_table(connection)
-	expected_results = get_standard_output_data()
-	for tup in expected_results:
+	standard_results = get_standard_output_data()
+	expected_results = set()
+	for tup in standard_results:
 		if tup[1] == '123456':
 			tuplst = list(tup)
 			tuplst[-1] = True
 			tup = tuple(tuplst)
+		expected_results.add(tup)
 	assert  expected_results == results
 
-def test_process_processing_id_flight_id_with_alignment_conflict_populate_does_not_insert_corresponding(connection):
+def test_process_processing_id_flight_id_with_alignment_conflict_populate_deletes_corresponding(connection):
 	connection.execute("""INSERT INTO vendor_ids.alignment_conflicts (li_code, date_start, date_end)
 							VALUES ('LI-123456', '2018-04-30', '2018-05-03');""")
 
-	h.process_processing_id(connection, 'import_id', '1')
+	h.process_processing_id(connection, 'li_code', 'LI-123456')
 
 	results = select_all_from_output_table(connection)
-	expected_results = get_standard_output_data()
-	for tup in expected_results:
+	standard_results = get_standard_output_data()
+	expected_results = set()
+	for tup in standard_results:
 		if tup[1] == '123456':
 			tuplst = list(tup)
 			tuplst[-1] = True
 			tup = tuple(tuplst)
-	assert expected_results == results
+		expected_results.add(tup)
+	assert  expected_results == results
 
 def test_generate_expected_data_temp_table_processing_id_creates_correct_temp_table(connection):
 	with connection.begin() as transaction:
-		temp_table = h.generate_expected_data_temp_table(connection, 'import_id', '1')
+		temp_table, _ = h.generate_expected_data_temp_table(connection, 'import_id', '1')
 		s = select([temp_table.c.date, temp_table.c.flight_id, temp_table.c.creative_id, temp_table.c.impressions, temp_table.c.clicks, temp_table.c.provider, temp_table.c.time_zone, temp_table.c.is_deleted])
 		assert get_standard_output_data() == {tuple(rowproxy.values()) for rowproxy in connection.execute(s).fetchall()}
 
@@ -185,7 +187,7 @@ def test_calculate_diffs_and_writes_to_output_table_temp_table_returns_correct_d
 		# load temp table and calculate diffs
 		metadata = MetaData(connection, reflect=True)
 		temp_table = Table("temp_table", metadata, autoload=True, autoload_with=connection)
-		deleted, inserted = h.calculate_diffs_and_writes_to_output_table(connection, temp_table)
+		deleted, inserted = h.calculate_diffs_and_writes_to_output_table(connection, temp_table, [7891011])
 
 		assert deleted == [{'flight_id' : '7891011' , 'creative_id' : '1111111', 'date' : datetime.date(2018, 5, 5)}]
 

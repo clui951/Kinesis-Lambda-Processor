@@ -4,3 +4,5 @@ virtualenv
 *__pycache__
 *.idea
 *.pytest_cache
+*.cache
+*.pyc
