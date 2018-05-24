@@ -120,7 +120,6 @@ def test_process_processing_id_flight_ids_with_deleted_vendor_ids_maps_populate_
 	assert  expected_results == results
 
 def test_process_processing_id_import_id_with_no_resulting_data_populate_nothing(connection):
-	# if no resulting data generated from upstream, previously corresponding data must be deleted
 	truncate_output_table(connection)
 	connection.execute("UPDATE vendor_ids.maps SET is_deleted = TRUE;")
 
@@ -165,11 +164,11 @@ def test_process_processing_id_flight_id_with_alignment_conflict_populate_delete
 
 def test_generate_expected_data_temp_table_processing_id_creates_correct_temp_table(connection):
 	with connection.begin() as transaction:
-		temp_table, _ = h.generate_expected_data_temp_table(connection, 'import_id', '1')
+		temp_table = h.generate_expected_data_temp_table(connection, 'import_id', '1')
 		s = select([temp_table.c.date, temp_table.c.flight_id, temp_table.c.creative_id, temp_table.c.impressions, temp_table.c.clicks, temp_table.c.provider, temp_table.c.time_zone, temp_table.c.is_deleted])
 		assert get_standard_output_data() == {tuple(rowproxy.values()) for rowproxy in connection.execute(s).fetchall()}
 
-def test_calculate_diffs_and_writes_to_output_table_temp_table_returns_correct_diffs(connection):
+def test_calculate_diffs_and_writes_to_output_table_temp_table_and_do_perform_deletions_returns_correct_diffs(connection):
 	with connection.begin() as transaction:
 		# build temp table
 		connection.execute(""" 
@@ -187,9 +186,43 @@ def test_calculate_diffs_and_writes_to_output_table_temp_table_returns_correct_d
 		# load temp table and calculate diffs
 		metadata = MetaData(connection, reflect=True)
 		temp_table = Table("temp_table", metadata, autoload=True, autoload_with=connection)
-		deleted, inserted = h.calculate_diffs_and_writes_to_output_table(connection, temp_table, [7891011])
+		deleted, inserted = h.calculate_diffs_and_writes_to_output_table(connection, temp_table, [7891011], True)
 
 		assert deleted == [{'flight_id' : '7891011' , 'creative_id' : '1111111', 'date' : datetime.date(2018, 5, 5)}]
+
+		expected_inserted = [
+						{'date': datetime.date(2018, 4, 30), 'flight_id':'7891011', 'creative_id':'3333333', 'impressions':1809, 'clicks':2, 'provider':'DoubleClick', 'time_zone':'America/New_York', 'updated_at':None, 'is_deleted': False},
+						{'date': datetime.date(2018, 4, 30), 'flight_id':'7891011', 'creative_id':'4444444', 'impressions':19032, 'clicks':4, 'provider':'DoubleClick','time_zone':'America/New_York', 'updated_at':None, 'is_deleted': False},
+						{'date': datetime.date(2018, 4, 30), 'flight_id':'7891011', 'creative_id':'5555555', 'impressions':5588, 'clicks':1, 'provider':'DoubleClick', 'time_zone':'America/New_York', 'updated_at':None, 'is_deleted': False}
+					]
+
+		# sort both lists for comparison; using impressions, but any unique value will be okay
+		inserted, expected_inserted = [sorted(l, key=itemgetter('impressions')) 
+                      for l in (inserted, expected_inserted)]
+
+		assert inserted == expected_inserted
+
+def test_calculate_diffs_and_writes_to_output_table_temp_table_and_dont_perform_deletions_returns_correct_diffs(connection):
+	with connection.begin() as transaction:
+		# build temp table
+		connection.execute(""" 
+				SELECT * INTO TEMPORARY TABLE temp_table
+				FROM {}
+				WHERE flight_id = '7891011';
+			""".format(OUTPUT_TABLE_FULL_NAME))
+
+		# change output table
+		connection.execute("""
+				INSERT INTO {} (date, flight_id, creative_id, impressions, clicks, provider, time_zone, is_deleted) 
+				VALUES ('2018-05-05', '7891011', '1111111', 999, 999, 'DoubleClick', 'America/New_York', 'f');
+			""".format(OUTPUT_TABLE_FULL_NAME))
+
+		# load temp table and calculate diffs
+		metadata = MetaData(connection, reflect=True)
+		temp_table = Table("temp_table", metadata, autoload=True, autoload_with=connection)
+		deleted, inserted = h.calculate_diffs_and_writes_to_output_table(connection, temp_table, [], False)
+
+		assert deleted == []
 
 		expected_inserted = [
 						{'date': datetime.date(2018, 4, 30), 'flight_id':'7891011', 'creative_id':'3333333', 'impressions':1809, 'clicks':2, 'provider':'DoubleClick', 'time_zone':'America/New_York', 'updated_at':None, 'is_deleted': False},

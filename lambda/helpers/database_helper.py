@@ -13,8 +13,15 @@ def process_processing_id(connection, processing_id_type, processing_id):
     with connection.begin() as transaction:
         set_lock_timeout_for_transaction(connection)
 
-        temp_table, flight_ids_affected = generate_expected_data_temp_table(connection, processing_id_type, processing_id)
-        deleted, inserted = calculate_diffs_and_writes_to_output_table(connection, temp_table, flight_ids_affected)
+        temp_table = generate_expected_data_temp_table(connection, processing_id_type, processing_id)
+
+        explicit_flight_ids_affected = []
+        perform_deletions = False
+        if processing_id_type == LI_CODE_STRING:
+            explicit_flight_ids_affected = [processing_id[3:]]
+            perform_deletions = True
+
+        deleted, inserted = calculate_diffs_and_writes_to_output_table(connection, temp_table, explicit_flight_ids_affected, perform_deletions)
 
 # change lock timeout for current transaction
 LOCK_TIMEOUT_MS = 3000
@@ -47,25 +54,25 @@ def generate_expected_data_temp_table(connection, processing_id_type, processing
     temp_table_name = TEMP_TABLE_BASE_NAME.format(processing_id.replace("-","")).lower()
     where_clause_string = PROCESSING_TYPE[processing_id_type].format(processing_id)
 
-    flight_ids_affected = []
-    if processing_id_type == LI_CODE_STRING:
-        flight_ids_affected = [processing_id[3:]]
+    
 
     build_temp_table_query = EXPECTED_DATA_BASE_QUERY.format(temp_table_name, where_clause_string)
 
     connection.execute(build_temp_table_query)
 
     metadata = MetaData(connection, reflect=True)
-    return Table(temp_table_name, metadata, autoload=True, autoload_with=connection), flight_ids_affected
+    return Table(temp_table_name, metadata, autoload=True, autoload_with=connection)
 
 # calculate diffs against final results table
 OUTPUT_SCHEMA = 'snoopy'
 OUTPUT_TABLE = 'delivery_by_flight_creative_day'
-def calculate_diffs_and_writes_to_output_table(connection, temp_table, flight_ids_affected):
-    if not flight_ids_affected:
+def calculate_diffs_and_writes_to_output_table(connection, temp_table, explicit_flight_ids_affected, perform_deletions):
+    if not explicit_flight_ids_affected:
         flight_ids_affected = [row[temp_table.c.flight_id] for row in select([temp_table.c.flight_id]).distinct().execute().fetchall()]
         if not flight_ids_affected:
             return ([], [])
+    else:
+        flight_ids_affected = explicit_flight_ids_affected
     flight_ids_affected_string = "(" + ",".join(["'" + str(id) + "'" for id in flight_ids_affected]) + ")"
 
     metadata = MetaData(connection, reflect=True, schema=OUTPUT_SCHEMA)
@@ -80,16 +87,18 @@ def calculate_diffs_and_writes_to_output_table(connection, temp_table, flight_id
     """.format(output_table.schema + "." + output_table.name, flight_ids_affected_string)
     connection.execute(lock_rows_query)
 
-    # do deletions
-    deleted_query = """
-        UPDATE {0} output
-        SET is_deleted = TRUE
-        WHERE flight_id IN {1} AND NOT EXISTS (
-            SELECT flight_id, creative_id, date
-            FROM {2} temp
-            WHERE output.flight_id = temp.flight_id AND output.creative_id = temp.creative_id AND output.date = temp.date AND output.is_deleted = FALSE
-        ) RETURNING flight_id, creative_id, date;""".format(output_table.schema + "." + output_table.name, flight_ids_affected_string, temp_table.name)
-    deleted = [dict(row) for row in connection.execute(deleted_query).fetchall()]
+    deleted = []
+    if perform_deletions:
+        # do deletions
+        deleted_query = """
+            UPDATE {0} output
+            SET is_deleted = TRUE
+            WHERE flight_id IN {1} AND NOT EXISTS (
+                SELECT flight_id, creative_id, date
+                FROM {2} temp
+                WHERE output.flight_id = temp.flight_id AND output.creative_id = temp.creative_id AND output.date = temp.date AND output.is_deleted = FALSE
+            ) RETURNING flight_id, creative_id, date;""".format(output_table.schema + "." + output_table.name, flight_ids_affected_string, temp_table.name)
+        deleted = [dict(row) for row in connection.execute(deleted_query).fetchall()]
 
     # do update / insertion together
     delete_for_update_query = """
