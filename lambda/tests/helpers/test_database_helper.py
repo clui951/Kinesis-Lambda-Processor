@@ -27,8 +27,8 @@ def engine():
 @pytest.fixture(scope="module", autouse=True)
 def setup_and_teardown_for_entire_test_suite(engine):
 	# Setup before starting entire test suite
-	truncate_all_tables(engine.connect())
-	load_upstream_table_data(engine.connect())
+	reset_upstream_tables(engine.connect())
+	truncate_output_table(engine.connect())
 	yield
 	# Teardown after ending entire test suite
 	truncate_all_tables(engine.connect())
@@ -40,6 +40,7 @@ def connection(engine):
 @pytest.fixture(scope="function", autouse=True)
 def setup_and_teardown_for_each_test(connection):
 	# Setup before each test
+	reset_upstream_tables(connection)
 	insert_standard_output_data(connection)
 	yield
 	# Teardown after each test
@@ -102,6 +103,64 @@ def test_process_processing_id_flight_id_with_new_data_populate_new_data(connect
 	results = select_all_from_output_table(connection)
 	assert get_standard_output_data() == results
 
+def test_process_processing_id_import_id_with_deleted_vendor_ids_maps_populate_marks_as_deleted(connection):
+	connection.execute("UPDATE vendor_ids.maps SET is_deleted = TRUE WHERE li_code = 'LI-123456';")
+
+	h.process_processing_id(connection, 'import_id', '1')
+
+	results = select_all_from_output_table(connection)
+	expected_results = get_standard_output_data()
+	for tup in expected_results:
+		if tup[1] == '123456':
+			tuplst = list(tup)
+			tuplst[-1] = True
+			tup = tuple(tuplst)
+	assert  expected_results == results
+
+def test_process_processing_id_import_id_with_no_resulting_data_populate_deletes_all_corresponding(connection):
+	# if no resulting data generated from upstream, previously corresponding data must be deleted
+	connection.execute("UPDATE vendor_ids.maps SET is_deleted = TRUE;")
+
+	h.process_processing_id(connection, 'import_id', '1')
+
+	results = select_all_from_output_table(connection)
+	expected_results = get_standard_output_data()
+	for tup in expected_results:
+		tuplst = list(tup)
+		tuplst[-1] = True
+		tup = tuple(tuplst)
+	assert  expected_results == results
+
+def test_process_processing_id_flight_id_with_no_resulting_data_populate_deletes_all_corresponding(connection):
+	# if no resulting data generated from upstream, previously corresponding data must be deleted
+	connection.execute("UPDATE vendor_ids.maps SET is_deleted = TRUE WHERE li_code = 'LI-123456';")
+
+	h.process_processing_id(connection, 'li_code', 'LI-123456')
+
+	results = select_all_from_output_table(connection)
+	expected_results = get_standard_output_data()
+	for tup in expected_results:
+		if tup[1] == '123456':
+			tuplst = list(tup)
+			tuplst[-1] = True
+			tup = tuple(tuplst)
+	assert  expected_results == results
+
+def test_process_processing_id_flight_id_with_alignment_conflict_populate_does_not_insert_corresponding(connection):
+	connection.execute("""INSERT INTO vendor_ids.alignment_conflicts (li_code, date_start, date_end)
+							VALUES ('LI-123456', '2018-04-30', '2018-05-03');""")
+
+	h.process_processing_id(connection, 'import_id', '1')
+
+	results = select_all_from_output_table(connection)
+	expected_results = get_standard_output_data()
+	for tup in expected_results:
+		if tup[1] == '123456':
+			tuplst = list(tup)
+			tuplst[-1] = True
+			tup = tuple(tuplst)
+	assert expected_results == results
+
 def test_generate_expected_data_temp_table_processing_id_creates_correct_temp_table(connection):
 	with connection.begin() as transaction:
 		temp_table = h.generate_expected_data_temp_table(connection, 'import_id', '1')
@@ -156,9 +215,13 @@ def test_set_lock_timeout_for_transaction_timeout_with_expected_error(engine):
 				if h.LOCK_ERROR_MESSAGE in traceback.format_exc():
 					raise
 
+
 ##########################
 ##### Helper Methods #####
 ##########################
+def reset_upstream_tables(connection):
+	truncate_all_tables(connection)
+	load_upstream_table_data(connection)
 
 def load_upstream_table_data(connection):
 	doubleclick_raw_delivery_insert_query = """
@@ -208,7 +271,7 @@ def truncate_all_tables(connection):
 	connection.execute("TRUNCATE double_click.import_metadata;")
 	connection.execute("TRUNCATE import.records CASCADE;")
 	connection.execute("TRUNCATE vendor_ids.maps;")
-	truncate_output_table(connection)
+	connection.execute("TRUNCATE vendor_ids.alignment_conflicts;")
 
 def truncate_output_table(connection):
 	connection.execute("TRUNCATE {};".format(OUTPUT_TABLE_FULL_NAME))		
