@@ -1,6 +1,7 @@
 # kinesis-lambda-processor
 Repo for a Lambda Processor that consumes a Kinesis stream and processes on a RDS database.
 
+
 ### To Setup Virtual Environment
 Create a virtual environment and source it  
 ```
@@ -18,7 +19,14 @@ __Note:__ First make sure you have sourced your virtual environment (see above)
 $ ./publish.sh
 ```
 
-### How to Run Tests
+### How to Run Tests Locally
+#### Through Docker
+```
+$ make clean
+$ make build
+$ make test
+```
+#### Through local environment / command line
 __Note:__ First makesure you have sourced your virtual environment (see above)
 ```
 $ cd lambda/
@@ -27,6 +35,6 @@ $ python -m pytest tests/ -s -v  # To see stdout and details
 $ python -m pytest tests/path/to/test.py::test_name -s -v # To run specific test in file
 ```
 
-#### Why is Psycopg2 Dependency Already Included
+### Why is Psycopg2 Dependency Already Included
 Psycopg2 is a compiled module, but AWS Lambda does not have the required PostgreSQL libraries in the AMI image to do so. We need to include a version that has been statically pre-compiled on an Amazon Linux machine.
 https://github.com/jkehler/awslambda-psycopg2 (use psycopg2-3.6 for python3.6)
