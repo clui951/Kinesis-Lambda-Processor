@@ -3,10 +3,12 @@ services:
   db:
     build:
       context: 'docker/postgres'
+    image: snoopy_test_db
   tests:
     build:
       context: lambda
       dockerfile: tests/Dockerfile
+    image: snoopy_test
     command: python -m pytest tests/ -s -v
     depends_on:
       - 'db'
