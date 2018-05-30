@@ -17,7 +17,7 @@ OUTPUT_TABLE_FULL_NAME = h.OUTPUT_SCHEMA + "." + h.OUTPUT_TABLE
 
 @pytest.fixture(scope="module")
 def engine():
-	db_endpoint = db_config.db_endpoint
+	db_endpoint = db_config.db_test_endpoint
 	db_username = db_config.db_username
 	db_password = db_config.db_password
 	db_name = db_config.db_name

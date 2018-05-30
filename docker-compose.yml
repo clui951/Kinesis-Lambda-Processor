@@ -1,0 +1,14 @@
+version: '3'
+services:
+  db:
+    build:
+      context: 'docker/postgres'
+  tests:
+    build:
+      context: lambda
+      dockerfile: tests/Dockerfile
+    command: python -m pytest tests/ -s -v
+    depends_on:
+      - 'db'
+    environment:
+      - db_test_endpoint=db:5432
