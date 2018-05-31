@@ -1,0 +1,30 @@
+@Library('qools-jenkins-libraries') _
+pipeline {
+    agent {
+        label 'docker-base'
+    }
+    environment {
+        VERSION="1.0.${BUILD_NUMBER}"
+    }
+    options {
+        timestamps ()
+    }
+    stages {
+        stage('Build Version and Setup') {
+            steps {
+                setupGitHubPullRequests()
+                script {
+                    currentBuild.displayName = "kinesis-lambda-processor-dev-integration:$VERSION"
+                }
+            }
+        }
+        stage('Test') {
+            steps {
+                sh """
+                    make rebuild
+                    make test
+                """
+            }
+        }
+    }
+}
