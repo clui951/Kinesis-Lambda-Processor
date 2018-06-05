@@ -19,6 +19,22 @@ __Note:__ First make sure you have sourced your virtual environment (see above)
 $ ./publish.sh
 ```
 
+### Production/Staging Lambda Environment
+2 separate lambda functions set up:  
+[kinesis-lambda-processor-staging]()  
+[kinesis-lambda-processor-prod]()  
+When the publish script is run, a new deployment package is shipped to the corresponding lambda function, a new version is published, and the function alias `master` points to the new published version.  
+
+Logs can be found in CloudWatch > Log Groups > /aws/lambda/kinesis-lambda-processor-\<env\>
+
+### Consuming from Kinesis Queue
+The Kinesis stream that the processor consumes from is: Kinesis-Lambda-Event-Stream  
+Example write to queue using aws cli:  
+```
+$ aws kinesis put-record --profile default --stream-name Kinesis-Lambda-Event-Stream --partition-key 1468224 --data '{"processing_id_type":"import_id","processing_id":"1468224"}'
+$ aws kinesis put-record --profile default --stream-name Kinesis-Lambda-Event-Stream --partition-key 'LI-568467' --data '{"processing_id_type":"li_code","processing_id":"LI-568467"}'
+```
+
 ### How to Run Tests Locally
 #### Through Docker
 ```
