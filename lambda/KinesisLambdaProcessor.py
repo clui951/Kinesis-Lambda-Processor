@@ -30,7 +30,7 @@ db_name = db_config.db_name
 db_postgres_string = "postgres://" + db_username + ":" + db_password + "@" + db_endpoint + "/" + db_name
 
 logger.info("Creating new database engine: " + db_postgres_string)
-engine = create_new_engine(db_postgres_string)
+engine = create_new_engine(db_postgres_string, pool_size=10, max_overflow=20)
 
 # Expected messages handling
 PROCESSING_ID_TYPE_JSON_HEADER = 'processing_id_type'
@@ -56,13 +56,16 @@ def lambda_handler(event, context):
             retries_left = MAXIMUM_RETRY_ON_DEADLOCK
             while retries_left >= 0:
                 try:
-                    process_processing_id(get_connection(), processing_id_type, processing_id)
+                    connection = get_connection()
+                    process_processing_id(connection, processing_id_type, processing_id)
                     break;
                 except OperationalError as e:
                     if LOCK_ERROR_MESSAGE in traceback.format_exc() and retries_left > 0:
                         logger.warn('Lock timeout trying to process {0}. Number of attempts left: {1}'.format(decoded_payload, retries_left))
                     else:
                         raise
+                finally:
+                    connection.close()
                 retries_left -= 1
     
     except Exception as e:
