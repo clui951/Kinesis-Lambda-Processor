@@ -8,8 +8,8 @@ from sqlalchemy import create_engine, select, Table, MetaData, and_
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-def create_new_engine(db_postgres_string):
-    return create_engine(db_postgres_string)
+def create_new_engine(db_postgres_string, pool_size, max_overflow):
+    return create_engine(db_postgres_string, pool_size=pool_size, max_overflow=max_overflow)
 
 # Database_helper entrypoint, called by main processor
 def process_processing_id(connection, processing_id_type, processing_id):
