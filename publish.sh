@@ -33,7 +33,7 @@ done
 print_linebreak
 echo "Creating Deployment Package"
 
-rm KinesisLambdaProcessor.zip
+rm KinesisLambdaProcessor.zip || true
 
 cd lambda
 pip3 install -r requirements.txt
