@@ -1,413 +1,194 @@
-import pytest
-import traceback
-import datetime
-from operator import itemgetter
-
-from sqlalchemy.exc import OperationalError
-from sqlalchemy import select, MetaData, Table
-
-from config import db_config
-from helpers import database_helper as h
-
-OUTPUT_TABLE_FULL_NAME = h.OUTPUT_SCHEMA + "." + h.OUTPUT_TABLE
-
-###########################
-##### Pytest Fixtures #####
-###########################
-
-@pytest.fixture(scope="module")
-def engine():
-	db_endpoint = db_config.db_test_endpoint
-	db_username = db_config.db_username
-	db_password = db_config.db_password
-	db_name = db_config.db_name
-	db_postgres_string = "postgres://" + db_username + ":" + db_password + "@" + db_endpoint + "/" + db_name
-	return h.create_new_engine(db_postgres_string)
-
-@pytest.fixture(scope="module", autouse=True)
-def setup_and_teardown_for_entire_test_suite(engine):
-	# Setup before starting entire test suite
-	reset_upstream_tables(engine.connect())
-	truncate_output_table(engine.connect())
-	yield
-	# Teardown after ending entire test suite
-	truncate_all_tables(engine.connect())
-
-@pytest.fixture(scope="function")
-def connection(engine):
-	return engine.connect()
-
-@pytest.fixture(scope="function", autouse=True)
-def setup_and_teardown_for_each_test(connection):
-	# Setup before each test
-	reset_upstream_tables(connection)
-	insert_standard_output_data(connection)
-	yield
-	# Teardown after each test
-	truncate_output_table(connection)
-
-
-#################
-##### Tests #####
-#################
-
-def test_process_flight_id_with_empty_table_populate_expected_output(connection):
-	truncate_output_table(connection)
-	h.process_processing_id(connection, 'li_code', 'LI-123456')
-	h.process_processing_id(connection, 'li_code', 'LI-7891011')
-
-	results = select_all_from_output_table(connection)
-	assert get_standard_output_data() == results
-
-def test_process_import_id_with_empty_table_populate_expected_output(connection):
-	truncate_output_table(connection)
-	h.process_processing_id(connection, 'import_id', '1')
-
-	results = select_all_from_output_table(connection)
-	assert get_standard_output_data() == results
-
-def test_process_flight_id_with_deleted_rows_populate_marks_as_deleted(connection):
-	connection.execute("""
-			INSERT INTO {} (date, flight_id, creative_id, impressions, clicks, provider, time_zone, is_deleted) 
-			VALUES ('2018-05-05', '123456', '1111111', 999, 999, 'doubleclick', 'America/New_York', 'f');
-		""".format(OUTPUT_TABLE_FULL_NAME))
-
-	h.process_processing_id(connection, 'li_code', 'LI-123456')
-
-	results = select_all_from_output_table(connection)
-	expected = get_standard_output_data()
-	expected.add((datetime.date(2018, 5, 5), '123456', '1111111', 999, 999, 'doubleclick', 'America/New_York', True))
-	assert expected == results
-
-def test_process_flight_id_with_undeleted_rows_populate_marks_as_not_deleted(connection):
-	connection.execute("UPDATE {} SET is_deleted = TRUE WHERE flight_id = '123456';".format(OUTPUT_TABLE_FULL_NAME))
-
-	h.process_processing_id(connection, 'li_code', 'LI-123456')
-
-	results = select_all_from_output_table(connection)
-	assert get_standard_output_data() == results
-
-def test_process_flight_id_with_updated_data_populate_updates_data(connection):
-	connection.execute("UPDATE {} SET clicks = 0 WHERE flight_id = '123456';".format(OUTPUT_TABLE_FULL_NAME))
-
-	h.process_processing_id(connection, 'li_code', 'LI-123456')
-
-	results = select_all_from_output_table(connection)
-	assert get_standard_output_data() == results
-
-def test_process_flight_id_with_new_data_populate_new_data(connection):
-	connection.execute("DELETE FROM {} WHERE flight_id = '123456' AND date = '2018-05-01';".format(OUTPUT_TABLE_FULL_NAME))
-
-	h.process_processing_id(connection, 'li_code', 'LI-123456')
-
-	results = select_all_from_output_table(connection)
-	assert get_standard_output_data() == results
-
-def test_process_flight_ids_with_deleted_vendor_ids_maps_populate_marks_as_deleted(connection):
-	truncate_output_table(connection)
-	connection.execute("UPDATE vendor_ids.maps SET is_deleted = TRUE WHERE li_code = 'LI-123456';")
-
-	h.process_processing_id(connection, 'li_code', 'LI-123456')
-	h.process_processing_id(connection, 'li_code', 'LI-7891011')
-
-	results = select_all_from_output_table(connection)
-	standard_results = get_standard_output_data()
-	expected_results = set()
-	for tup in standard_results:
-		if tup[1] == '123456':
-			continue
-		expected_results.add(tup)
-	assert  expected_results == results
-
-def test_process_import_id_with_no_resulting_data_populate_nothing(connection):
-	truncate_output_table(connection)
-	connection.execute("UPDATE vendor_ids.maps SET is_deleted = TRUE;")
-
-	h.process_processing_id(connection, 'import_id', '1')
-
-	results = select_all_from_output_table(connection)
-	assert  set() == results
-
-def test_process_flight_id_with_no_resulting_data_populate_deletes_all_corresponding(connection):
-	# if no resulting data generated from upstream, previously corresponding data must be deleted
-	connection.execute("UPDATE vendor_ids.maps SET is_deleted = TRUE WHERE li_code = 'LI-123456';")
-
-	h.process_processing_id(connection, 'li_code', 'LI-123456')
-
-	results = select_all_from_output_table(connection)
-	standard_results = get_standard_output_data()
-	expected_results = set()
-	for tup in standard_results:
-		if tup[1] == '123456':
-			tuplst = list(tup)
-			tuplst[-1] = True
-			tup = tuple(tuplst)
-		expected_results.add(tup)
-	assert  expected_results == results
-
-def test_process_flight_id_with_alignment_conflict_populate_deletes_corresponding(connection):
-	connection.execute("""INSERT INTO vendor_ids.alignment_conflicts (li_code, date_start, date_end)
-							VALUES ('LI-123456', '2018-04-30', '2018-05-03');""")
-
-	h.process_processing_id(connection, 'li_code', 'LI-123456')
-
-	results = select_all_from_output_table(connection)
-	standard_results = get_standard_output_data()
-	expected_results = set()
-	for tup in standard_results:
-		if tup[1] == '123456':
-			tuplst = list(tup)
-			tuplst[-1] = True
-			tup = tuple(tuplst)
-		expected_results.add(tup)
-	assert  expected_results == results
-
-def test_process_flight_id_with_within_flight_creative_conflict_populates_expected(connection):
-	truncate_output_table(connection)
-	connection.execute("TRUNCATE vendor_ids.maps;")
-	connection.execute("TRUNCATE vendor_ids.alignment_conflicts;")
-	vendor_ids_maps_insert_within_flight_conflict_query = """
-				INSERT INTO vendor_ids.maps (li_code, creative_rtb_id, date_start, date_end, vendor, vendor_id, is_deleted)
-				VALUES
-					('LI-123456', 1111111, '2018-04-30', '2018-05-03', 'doubleclick', '12121212', 'f'),
-					('LI-123456', 2222222, '2018-04-30', '2018-05-03', 'doubleclick', '12121212', 'f');
-			"""
-	connection.execute(vendor_ids_maps_insert_within_flight_conflict_query)
-	vendor_ids_alignment_conflict_within_flight_conflict_query = """
-				INSERT INTO vendor_ids.alignment_conflicts (li_code, li_code_2, date_start, date_end, creative_ids)
-				VALUES ('LI-123456', 'LI-123456', '2018-04-30', '2018-05-03', ARRAY[1111111, 2222222]);
-			"""
-	connection.execute(vendor_ids_alignment_conflict_within_flight_conflict_query)
-
-	h.process_processing_id(connection, 'li_code', 'LI-123456')
-
-	results = select_all_from_output_table(connection)
-	result_dates = set()
-
-	for result in results:
-		assert result[1] == '123456'
-		assert result[2] == None
-		result_dates.add(result[0])
-	assert result_dates == set([datetime.date(2018, 4 , 30), datetime.date(2018, 5 , 1), datetime.date(2018, 5 , 2), datetime.date(2018, 5 , 3)])
-
-def test_process_import_id_within_flight_creative_conflict_populates_expected(connection):
-	truncate_output_table(connection)
-	vendor_ids_maps_set_within_flight_conflict_query = """
-					UPDATE vendor_ids.maps SET vendor_id = '12121212' WHERE li_code = 'LI-123456';
-				"""
-	connection.execute(vendor_ids_maps_set_within_flight_conflict_query)
-	vendor_ids_alignment_conflict_within_flight_conflict_query = """
-					INSERT INTO vendor_ids.alignment_conflicts (li_code, li_code_2, date_start, date_end, creative_ids)
-					VALUES ('LI-123456', 'LI-123456', '2018-04-30', '2018-05-03', ARRAY[1111111, 2222222]);
-				"""
-	connection.execute(vendor_ids_alignment_conflict_within_flight_conflict_query)
-
-	h.process_processing_id(connection, 'import_id', '1')
-
-	standard_output_data_flight_7891011 = get_standard_output_data_flight7891011()
-	results = select_all_from_output_table(connection)
-	for result in results:
-		if result[1] == '123456':
-			assert result[2] == None
-		if result[2] == '7891011':
-			assert result in standard_output_data_flight_7891011
-
-def test_process_flight_id_both_within_and_not_within_flight_creative_conflict_populates_none(connection):
-	truncate_output_table(connection)
-	connection.execute("TRUNCATE vendor_ids.maps;")
-	connection.execute("TRUNCATE vendor_ids.alignment_conflicts;")
-	vendor_ids_maps_insert_within_flight_conflict_query = """
-				INSERT INTO vendor_ids.maps (li_code, creative_rtb_id, date_start, date_end, vendor, vendor_id, is_deleted)
-				VALUES
-					('LI-123456', 1111111, '2018-04-30', '2018-05-03', 'doubleclick', '12121212', 'f'),
-					('LI-123456', 2222222, '2018-04-30', '2018-05-03', 'doubleclick', '12121212', 'f');
-			"""
-	connection.execute(vendor_ids_maps_insert_within_flight_conflict_query)
-	vendor_ids_alignment_conflict_within_flight_conflict_query = """
-				INSERT INTO vendor_ids.alignment_conflicts (li_code, li_code_2, date_start, date_end, creative_ids)
-				VALUES ('LI-123456', 'LI-123456', '2018-04-30', '2018-05-03', ARRAY[1111111, 2222222]),
-						('LI-123456', 'LI-999999', '2018-04-30', '2018-05-03', ARRAY[1111111, 9999999]);
-			"""
-	connection.execute(vendor_ids_alignment_conflict_within_flight_conflict_query)
-
-	h.process_processing_id(connection, 'li_code', 'LI-123456')
-
-	results = select_all_from_output_table(connection)
-	assert results == set()
-
-def test_process_flight_id_with_previous_within_flight_creative_conflict_populates_expected(connection):
-	truncate_output_table(connection)
-	# add previous within flight creative conflict record to output table
-	connection.execute("""
-					INSERT INTO {} (date, flight_id, creative_id, impressions, clicks, provider, time_zone, is_deleted)
-					VALUES ('2018-05-01', '123456', NULL, 999, 999, 'doubleclick', 'America/New_York', 'f');
-				""".format(OUTPUT_TABLE_FULL_NAME))
-
-	h.process_processing_id(connection, 'li_code', 'LI-123456')
-
-	results = select_all_from_output_table(connection)
-	expected = get_standard_output_data_flight123456()
-	expected.add((datetime.date(2018, 5, 1), '123456', None, 999, 999, 'doubleclick', 'America/New_York', True))
-	assert expected == results
-
-def test_generate_expected_data_temp_table_processing_id_creates_correct_temp_table(connection):
-	with connection.begin() as transaction:
-		temp_table = h.generate_expected_data_temp_table(connection, 'import_id', '1')
-		s = select([temp_table.c.date, temp_table.c.flight_id, temp_table.c.creative_id, temp_table.c.impressions, temp_table.c.clicks, temp_table.c.provider, temp_table.c.time_zone, temp_table.c.is_deleted])
-		assert get_standard_output_data() == {tuple(rowproxy.values()) for rowproxy in connection.execute(s).fetchall()}
-
-def test_calculate_diffs_and_writes_to_output_table_temp_table_and_do_perform_deletions_returns_correct_diffs(connection):
-	with connection.begin() as transaction:
-		# build temp table
-		connection.execute(""" 
-				SELECT * INTO TEMPORARY TABLE temp_table
-				FROM {}
-				WHERE flight_id = '7891011';
-			""".format(OUTPUT_TABLE_FULL_NAME))
-
-		# change output table
-		connection.execute("""
-				INSERT INTO {} (date, flight_id, creative_id, impressions, clicks, provider, time_zone, is_deleted) 
-				VALUES ('2018-05-05', '7891011', '1111111', 999, 999, 'doubleclick', 'America/New_York', 'f');
-			""".format(OUTPUT_TABLE_FULL_NAME))
-
-		# load temp table and calculate diffs
-		metadata = MetaData(connection, reflect=True)
-		temp_table = Table("temp_table", metadata, autoload=True, autoload_with=connection)
-		deleted, inserted = h.calculate_diffs_and_writes_to_output_table(connection, temp_table, [7891011], True)
-
-		assert deleted == [{'flight_id' : '7891011' , 'creative_id' : '1111111', 'date' : datetime.date(2018, 5, 5)}]
-
-		expected_inserted = [
-						{'date': datetime.date(2018, 4, 30), 'flight_id':'7891011', 'creative_id':'3333333', 'impressions':1809, 'clicks':2, 'provider':'doubleclick', 'time_zone':'America/New_York', 'updated_at':None, 'is_deleted': False},
-						{'date': datetime.date(2018, 4, 30), 'flight_id':'7891011', 'creative_id':'4444444', 'impressions':19032, 'clicks':4, 'provider':'doubleclick','time_zone':'America/New_York', 'updated_at':None, 'is_deleted': False},
-						{'date': datetime.date(2018, 4, 30), 'flight_id':'7891011', 'creative_id':'5555555', 'impressions':5588, 'clicks':1, 'provider':'doubleclick', 'time_zone':'America/New_York', 'updated_at':None, 'is_deleted': False}
-					]
-
-		# sort both lists for comparison; using impressions, but any unique value will be okay
-		inserted, expected_inserted = [sorted(l, key=itemgetter('impressions'))
-					  for l in (inserted, expected_inserted)]
-
-		assert inserted == expected_inserted
-
-def test_set_lock_timeout_for_transaction_timeout_with_expected_error(engine):
-	locking_connection = engine.connect()
-	blocked_connection = engine.connect()
-
-	with locking_connection.begin() as transaction:
-		locking_connection.execute("SELECT * FROM {} FOR UPDATE".format(OUTPUT_TABLE_FULL_NAME))
-		h.set_lock_timeout_for_transaction(blocked_connection)
-		with pytest.raises(OperationalError):
-			try:
-				blocked_connection.execute("SELECT * FROM {} FOR UPDATE".format(OUTPUT_TABLE_FULL_NAME))
-			except OperationalError as e:
-				if h.LOCK_ERROR_MESSAGE in traceback.format_exc():
-					raise
-
-
-##########################
-##### Helper Methods #####
-##########################
-def reset_upstream_tables(connection):
-	truncate_all_tables(connection)
-	load_upstream_table_data(connection)
-
-def load_upstream_table_data(connection):
-	doubleclick_raw_delivery_insert_query = """
-			INSERT INTO double_click.raw_delivery (import_record_id, placement_id, "date", impressions, clicks, campaign_id, ad_id, advertiser, advertiser_id, campaign, placement_rate, site_keyname)
-			VALUES
-				(1, 12121212, '2018-05-03', 50714, 7, 000, 000, 'junk', 000, 'junk', 000, 'junk'),
-				(1, 23232323, '2018-05-03', 1044, 0, 000, 000, 'junk', 000, 'junk', 000, 'junk'),
-				(1, 12121212, '2018-05-02', 58977, 3, 000, 000, 'junk', 000, 'junk', 000, 'junk'),
-				(1, 23232323, '2018-05-02', 905, 2, 000, 000, 'junk', 000, 'junk', 000, 'junk'),
-				(1, 12121212, '2018-05-01', 42303, 3, 000, 000, 'junk', 000, 'junk', 000, 'junk'),
-				(1, 23232323, '2018-05-01', 2736, 2, 000, 000, 'junk', 000, 'junk', 000, 'junk'),
-				(1, 12121212, '2018-04-30', 43841, 4, 000, 000, 'junk', 000, 'junk', 000, 'junk'),
-				(1, 23232323, '2018-04-30', 2941, 2, 000, 000, 'junk', 000, 'junk', 000, 'junk'),
-				(1, 34343434, '2018-04-30', 1809, 2, 000, 000, 'junk', 000, 'junk', 000, 'junk'),
-				(1, 45454545, '2018-04-30', 19032, 4, 000, 000, 'junk', 000, 'junk', 000, 'junk'),
-				(1, 56565656, '2018-04-30', 5588, 1, 000, 000, 'junk', 000, 'junk', 000, 'junk');
-		"""
-	connection.execute(doubleclick_raw_delivery_insert_query)
-
-	doubleclick_import_metadata_insert_query = """
-			INSERT INTO double_click.import_metadata (import_record_id, report_time_zone, s3_path, credential, profile_id)
-			VALUES
-				(1, 'America/New_York', 'junk', 'junk', 0);
-		"""
-	connection.execute(doubleclick_import_metadata_insert_query)
-
-	import_records_insert_query = """
-			INSERT INTO import.records (id, vendor)
-			VALUES
-				(1, 'doubleclick');
-		"""
-	connection.execute(import_records_insert_query)
-
-	vendor_ids_maps_insert_query = """
-			INSERT INTO vendor_ids.maps (li_code, creative_rtb_id, date_start, date_end, vendor, vendor_id, is_deleted)
-			VALUES
-				('LI-123456', 1111111, '2018-04-30', '2018-05-03', 'doubleclick', '12121212', 'f'),
-				('LI-123456', 2222222, '2018-04-30', '2018-05-03', 'doubleclick', '23232323', 'f'),
-				('LI-7891011', 3333333, '2018-04-30', '2018-05-03', 'doubleclick', '34343434', 'f'),
-				('LI-7891011', 4444444, '2018-04-30', '2018-05-03', 'doubleclick', '45454545', 'f'),
-				('LI-7891011', 5555555, '2018-04-30', '2018-05-03', 'doubleclick', '56565656', 'f');
-		"""
-	connection.execute(vendor_ids_maps_insert_query)
-
-	static_calendar_insert_query = """INSERT INTO static.calendar (select i::date from generate_series('2018-04-01', '2018-05-31', '1 day'::interval) i);"""
-	connection.execute(static_calendar_insert_query)
-
-def truncate_all_tables(connection):
-	connection.execute("TRUNCATE double_click.raw_delivery;")
-	connection.execute("TRUNCATE double_click.import_metadata;")
-	connection.execute("TRUNCATE import.records CASCADE;")
-	connection.execute("TRUNCATE vendor_ids.maps;")
-	connection.execute("TRUNCATE vendor_ids.alignment_conflicts;")
-	connection.execute("TRUNCATE static.calendar;")
-
-def truncate_output_table(connection):
-	connection.execute("TRUNCATE {};".format(OUTPUT_TABLE_FULL_NAME))
-
-def insert_standard_output_data(connection):
-	insert_output_query = """
-			INSERT INTO {} ("date", flight_id, creative_id, impressions, clicks, provider, time_zone, is_deleted) 
-			VALUES 	
-					('2018-05-03', '123456', '1111111', 50714, 7, 'doubleclick', 'America/New_York', 'f'),
-					('2018-05-03', '123456', '2222222', 1044, 0, 'doubleclick', 'America/New_York', 'f'),
-					('2018-05-02', '123456', '1111111', 58977, 3, 'doubleclick', 'America/New_York', 'f'),
-					('2018-05-02', '123456', '2222222', 905, 2, 'doubleclick', 'America/New_York', 'f'),
-					('2018-05-01', '123456', '1111111', 42303, 3, 'doubleclick', 'America/New_York', 'f'),
-					('2018-05-01', '123456', '2222222', 2736, 2, 'doubleclick', 'America/New_York', 'f'),
-					('2018-04-30', '123456', '1111111', 43841, 4, 'doubleclick', 'America/New_York', 'f'),
-					('2018-04-30', '123456', '2222222', 2941, 2, 'doubleclick', 'America/New_York', 'f'),
-					('2018-04-30', '7891011', '3333333', 1809, 2, 'doubleclick', 'America/New_York', 'f'),
-					('2018-04-30', '7891011', '4444444', 19032, 4, 'doubleclick', 'America/New_York', 'f'),
-					('2018-04-30', '7891011', '5555555', 5588, 1, 'doubleclick', 'America/New_York', 'f');
-		""".format(OUTPUT_TABLE_FULL_NAME)
-	connection.execute(insert_output_query)
-
-def select_all_from_output_table(connection):
-	return {tuple(rowproxy.values()) for rowproxy in connection.execute("select date, flight_id, creative_id, impressions, clicks, provider, time_zone, is_deleted from {} ".format(OUTPUT_TABLE_FULL_NAME)).fetchall()}
-
-def get_standard_output_data():
-	return get_standard_output_data_flight123456().union(get_standard_output_data_flight7891011())
-
-def get_standard_output_data_flight7891011():
-	return {
-		(datetime.date(2018, 4, 30), '7891011', '3333333', 1809, 2, 'doubleclick', 'America/New_York', False),
-		(datetime.date(2018, 4, 30), '7891011', '4444444', 19032, 4, 'doubleclick', 'America/New_York', False),
-		(datetime.date(2018, 4, 30), '7891011', '5555555', 5588, 1, 'doubleclick', 'America/New_York', False)
-	}
-
-def get_standard_output_data_flight123456():
-	return {
-		(datetime.date(2018, 5, 3), '123456', '1111111', 50714, 7, 'doubleclick', 'America/New_York', False),
-		(datetime.date(2018, 5, 3), '123456', '2222222', 1044, 0, 'doubleclick', 'America/New_York', False),
-		(datetime.date(2018, 5, 2), '123456', '1111111', 58977, 3, 'doubleclick', 'America/New_York', False),
-		(datetime.date(2018, 5, 2), '123456', '2222222', 905, 2, 'doubleclick', 'America/New_York', False),
-		(datetime.date(2018, 5, 1), '123456', '1111111', 42303, 3, 'doubleclick', 'America/New_York', False),
-		(datetime.date(2018, 5, 1), '123456', '2222222', 2736, 2, 'doubleclick', 'America/New_York', False),
-		(datetime.date(2018, 4, 30), '123456', '1111111', 43841, 4, 'doubleclick', 'America/New_York', False),
-		(datetime.date(2018, 4, 30), '123456', '2222222', 2941, 2, 'doubleclick', 'America/New_York', False)
-	}
+import logging
+import warnings
+
+from sqlalchemy import exc as sa_exc
+from sqlalchemy import create_engine, select, Table, MetaData, and_
+
+# Logger settings
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def create_new_engine(db_postgres_string):
+    return create_engine(db_postgres_string)
+
+# Database_helper entrypoint, called by main processor
+def process_processing_id(connection, processing_id_type, processing_id):
+    with connection.begin() as transaction:
+        set_lock_timeout_for_transaction(connection)
+
+        temp_table = generate_expected_data_temp_table(connection, processing_id_type, processing_id)
+        s = select([temp_table.c.date, temp_table.c.flight_id, temp_table.c.creative_id, temp_table.c.impressions, temp_table.c.clicks, temp_table.c.provider, temp_table.c.time_zone, temp_table.c.is_deleted])
+
+        flight_ids_affected = []
+        if processing_id_type == LI_CODE_STRING:
+            flight_ids_affected = [processing_id[3:]]
+            perform_deletions = True
+        else:
+            flight_ids_affected = [row[temp_table.c.flight_id] for row in select([temp_table.c.flight_id]).distinct().execute().fetchall()]
+            perform_deletions = False
+        if not perform_deletions and not flight_ids_affected:
+            # no data in the temp table
+            return
+
+        deleted, inserted = calculate_diffs_and_writes_to_output_table(connection, temp_table, flight_ids_affected, perform_deletions)
+
+
+# Change lock timeout for current transaction
+LOCK_TIMEOUT_MS = 3000
+LOCK_TIMEOUT_QUERY = "SET lock_timeout = {};".format(LOCK_TIMEOUT_MS)
+LOCK_ERROR_MESSAGE = 'lock timeout'
+def set_lock_timeout_for_transaction(connection):
+    connection.execute(LOCK_TIMEOUT_QUERY)
+
+
+# Generating expected data temp table
+TEMP_TABLE_BASE_NAME = 'expected_temp_table_{}'
+LI_CODE_STRING = "li_code"
+IMPORT_ID_STRING = "import_id"
+CONDITION_STRING_BY_PROCESSING_ID_TYPE = {
+    LI_CODE_STRING : "m.li_code = '{}'",
+    IMPORT_ID_STRING : "im.import_record_id = '{}'"
+}
+
+# Temporarily hard coding DoubleClick as the provider, and not joining to import.records table
+# Work is needed to fix import_record_ids such that they are consistent for double_click and import schema
+BUILD_EXPECTED_DATA_TEMP_TABLE_BASE_QUERY = """
+    CREATE TEMP TABLE {0} ON COMMIT DROP AS
+    SELECT rd.date, substring(m.li_code, 4) as flight_id, m.creative_rtb_id::text as creative_id, SUM(rd.impressions) as impressions, SUM(rd.clicks) as clicks, 'doubleclick'::TEXT as provider,
+    im.report_time_zone as time_zone, now() as updated_at, FALSE as is_deleted
+    FROM double_click.raw_delivery rd
+    JOIN vendor_ids.maps m ON m.vendor_id = rd.placement_id::text AND rd.date BETWEEN m.date_start AND m.date_end
+    JOIN double_click.import_metadata im USING (import_record_id)
+    LEFT JOIN vendor_ids.alignment_conflicts c ON m.li_code = c.li_code AND (rd.date BETWEEN c.date_start AND c.date_end)
+    WHERE {1} AND m.is_deleted = false AND c.li_code IS NULL
+    group by rd.date, m.li_code, m.creative_rtb_id, im.report_time_zone
+    order by date desc;
+"""
+def generate_expected_data_temp_table(connection, processing_id_type, processing_id):
+    temp_table_name = TEMP_TABLE_BASE_NAME.format(processing_id.replace("-","")).lower()
+    where_clause_string = CONDITION_STRING_BY_PROCESSING_ID_TYPE[processing_id_type].format(processing_id)
+
+    # Insert records for flights with no creative conflicts of any kind
+    build_expected_data_temp_table_base_query = BUILD_EXPECTED_DATA_TEMP_TABLE_BASE_QUERY.format(temp_table_name, where_clause_string)
+    connection.execute(build_expected_data_temp_table_base_query)
+
+    # Insert records for flights with within flight creative conflict only
+    insert_within_flight_creative_conflict_data_to_temp_table(connection, temp_table_name, processing_id_type, processing_id)
+
+    metadata = MetaData(connection, reflect=True)
+    return Table(temp_table_name, metadata, autoload=True, autoload_with=connection)
+
+
+# This query has two conditions that are dependent upon whether or not the processing id is li_code or import_id
+# See WITHIN_FLIGHT_CREATIVE_CONFLICT_QUERY_CONDITIONS_BY_PROCESSING_ID_TYPE
+INSERT_WITHIN_FLIGHT_CREATIVE_CONFLICT_BASE_QUERY = """
+    INSERT INTO {0} (
+        SELECT rd2.date, substring(tups.li_code, 4) as flight_id, NULL as creative_id, SUM(rd2.impressions) as impressions, 
+            SUM(rd2.clicks) as clicks, 'doubleclick'::TEXT as provider, im.report_time_zone as time_zone, 
+            now() as updated_at, FALSE as is_deleted 
+        FROM double_click.raw_delivery rd2
+        JOIN (
+            SELECT m.vendor_id, c.report_date AS date, m.li_code, m.vendor FROM static.calendar c 
+            JOIN vendor_ids.maps m ON c.report_date BETWEEN m.date_start AND m.date_end
+            JOIN {1} i on i.vendor_id =  m.vendor_id AND m.date_start <= max_date AND m.date_end >= min_date 
+            JOIN vendor_ids.alignment_conflicts cf on m.li_code = cf.li_code 
+                AND (c.report_date BETWEEN cf.date_start AND cf.date_end)
+            WHERE m.is_deleted = FALSE AND cf.li_code = cf.li_code_2
+            AND cf.li_code NOT IN (SELECT c2.li_code FROM vendor_ids.alignment_conflicts c2 WHERE c2.li_code != c2.li_code_2)
+            GROUP BY 1, 2, 3, 4
+            ) tups ON rd2.placement_id::text = tups.vendor_id AND rd2.date = tups.date
+        JOIN double_click.import_metadata im ON rd2.import_record_id = im.import_record_id
+        WHERE {2}
+        GROUP BY rd2.date, tups.li_code, im.report_time_zone
+    );
+"""
+RELEVANT_ID_MAPS_FOR_LI_CODE =   """(
+                            SELECT vendor_id, MIN(date_start) as min_date, MAX(date_end) as max_date FROM vendor_ids.maps
+                            WHERE li_code = '{0}'
+                            GROUP BY 1 )
+                        """
+LI_CODE_CONDITION =   """ 
+                            tups.li_code = '{0}' 
+                        """
+RELEVANT_ID_MAPS_FOR_IMPORT_ID = """ (
+                            SELECT placement_id::text as vendor_id, MIN(date) as min_date , MAX(date) as max_date 
+                                FROM double_click.raw_delivery
+                            WHERE import_record_id = {0}
+                            GROUP BY 1 )
+                        """
+IMPORT_ID_CONDITION = """ 
+                            rd2.import_record_id = {0} 
+                        """
+WITHIN_FLIGHT_CREATIVE_CONFLICT_QUERY_CONDITIONS_BY_PROCESSING_ID_TYPE = {
+    LI_CODE_STRING : (RELEVANT_ID_MAPS_FOR_LI_CODE, LI_CODE_CONDITION),
+    IMPORT_ID_STRING : (RELEVANT_ID_MAPS_FOR_IMPORT_ID, IMPORT_ID_CONDITION)
+}
+# Inserts records for flights with within flight creative conflicts only
+def insert_within_flight_creative_conflict_data_to_temp_table(connection, temp_table_name, processing_id_type, processing_id):
+    conditional_query_tuple = WITHIN_FLIGHT_CREATIVE_CONFLICT_QUERY_CONDITIONS_BY_PROCESSING_ID_TYPE[processing_id_type]
+    insert_within_flight_creative_conflict_query = INSERT_WITHIN_FLIGHT_CREATIVE_CONFLICT_BASE_QUERY.format(
+        temp_table_name,
+        conditional_query_tuple[0].format(processing_id),
+        conditional_query_tuple[1].format(processing_id)
+    )
+    connection.execute(insert_within_flight_creative_conflict_query)
+
+
+# Calculate diffs against final results table
+OUTPUT_SCHEMA = 'snoopy'
+OUTPUT_TABLE = 'delivery_by_flight_creative_day'
+def calculate_diffs_and_writes_to_output_table(connection, temp_table, flight_ids_affected, perform_deletions):
+    flight_ids_affected_string = "(" + ",".join(["'" + str(id) + "'" for id in flight_ids_affected]) + ")"
+
+    # Filter warnings due to partial index reflection in SqlAlchemy
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=sa_exc.SAWarning)
+
+        metadata = MetaData(connection, reflect=True, schema=OUTPUT_SCHEMA)
+        output_table = Table(OUTPUT_TABLE, metadata, autoload=True, autoload_with=connection)
+
+    # Lock rows; lock timeout should be caught, and force a retry
+    lock_rows_query = """
+        SELECT 1
+        FROM {0}
+        WHERE flight_id IN {1}
+        FOR UPDATE;
+    """.format(output_table.schema + "." + output_table.name,
+               flight_ids_affected_string)
+    connection.execute(lock_rows_query)
+
+    deleted = []
+    if perform_deletions:
+        # Do deletions
+        deleted_query = """
+            UPDATE {0} output
+            SET is_deleted = TRUE
+            WHERE flight_id IN {1} AND NOT EXISTS (
+                SELECT flight_id, creative_id, date
+                FROM {2} temp
+                WHERE output.flight_id = temp.flight_id AND output.creative_id = temp.creative_id 
+                    AND output.date = temp.date AND output.is_deleted = FALSE
+            ) RETURNING flight_id, creative_id, date;""".format(output_table.schema + "." + output_table.name,
+                                                                flight_ids_affected_string,
+                                                                temp_table.name)
+        deleted = [dict(row) for row in connection.execute(deleted_query).fetchall()]
+
+    # Do updates / insertions together
+    delete_for_update_query = """
+        DELETE
+        FROM {0} output
+            USING {1} temp
+        WHERE output.flight_id = temp.flight_id AND output.creative_id = temp.creative_id AND output.date = temp.date;""".format(
+                                                                output_table.schema + "." + output_table.name,
+                                                                temp_table.name)
+    connection.execute(delete_for_update_query)
+
+    insert_for_update_query = """
+        INSERT INTO {0} (
+            SELECT *
+            FROM {1} temp
+        ) RETURNING *;""".format(output_table.schema + "." + output_table.name,
+                                 temp_table.name)
+    inserted = [dict(row) for row in connection.execute(insert_for_update_query).fetchall()]
+
+    return (deleted, inserted)
