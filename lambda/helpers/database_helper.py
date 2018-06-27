@@ -1,14 +1,17 @@
 import logging
+import warnings
 
-from sqlalchemy import create_engine, select, Table, MetaData
+from sqlalchemy import exc as sa_exc
+from sqlalchemy import create_engine, select, Table, MetaData, and_
 
-# logger settings
+# Logger settings
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 def create_new_engine(db_postgres_string):
     return create_engine(db_postgres_string)
 
+# Database_helper entrypoint, called by main processor
 def process_processing_id(connection, processing_id_type, processing_id):
     with connection.begin() as transaction:
         set_lock_timeout_for_transaction(connection)
@@ -29,90 +32,163 @@ def process_processing_id(connection, processing_id_type, processing_id):
 
         deleted, inserted = calculate_diffs_and_writes_to_output_table(connection, temp_table, flight_ids_affected, perform_deletions)
 
-# change lock timeout for current transaction
+
+# Change lock timeout for current transaction
 LOCK_TIMEOUT_MS = 3000
 LOCK_TIMEOUT_QUERY = "SET lock_timeout = {};".format(LOCK_TIMEOUT_MS)
 LOCK_ERROR_MESSAGE = 'lock timeout'
 def set_lock_timeout_for_transaction(connection):
     connection.execute(LOCK_TIMEOUT_QUERY)
 
-# generating expected data temp table
+
+# Generating expected data temp table
 TEMP_TABLE_BASE_NAME = 'expected_temp_table_{}'
 LI_CODE_STRING = "li_code"
 IMPORT_ID_STRING = "import_id"
-PROCESSING_TYPE = {
+CONDITION_STRING_BY_PROCESSING_ID_TYPE = {
     LI_CODE_STRING : "m.li_code = '{}'",
     IMPORT_ID_STRING : "im.import_record_id = '{}'"
 }
-EXPECTED_DATA_BASE_QUERY = (
-    'CREATE TEMP TABLE {0} ON COMMIT DROP AS '
-    'SELECT rd.date, substring(m.li_code, 4) as flight_id, m.creative_rtb_id::text as creative_id, SUM(rd.impressions) as impressions, SUM(rd.clicks) as clicks, MAX(ir.vendor) as provider, MAX(im.report_time_zone) as time_zone, now() as updated_at, FALSE as is_deleted '
-    'FROM double_click.raw_delivery rd '
-    'JOIN vendor_ids.maps m ON m.vendor_id = rd.placement_id::text AND rd.date BETWEEN m.date_start AND m.date_end '
-    'JOIN double_click.import_metadata im USING (import_record_id) '
-    'JOIN import.records ir ON ir.id = rd.import_record_id '
-    'LEFT JOIN vendor_ids.alignment_conflicts c ON m.li_code = c.li_code AND (rd.date BETWEEN c.date_start AND c.date_end) '
-    'WHERE {1} AND m.is_deleted = false AND c.li_code IS NULL '
-    'group by rd.date, m.li_code, m.creative_rtb_id '
-    'order by date desc;'
-)
+
+# Temporarily hard coding DoubleClick as the provider, and not joining to import.records table
+# Work is needed to fix import_record_ids such that they are consistent for double_click and import schema
+BUILD_EXPECTED_DATA_TEMP_TABLE_BASE_QUERY = """
+    CREATE TEMP TABLE {0} ON COMMIT DROP AS
+    SELECT rd.date, substring(m.li_code, 4) as flight_id, m.creative_rtb_id::text as creative_id, SUM(rd.impressions) as impressions, SUM(rd.clicks) as clicks, 'doubleclick'::TEXT as provider,
+    im.report_time_zone as time_zone, now() as updated_at, FALSE as is_deleted
+    FROM double_click.raw_delivery rd
+    JOIN vendor_ids.maps m ON m.vendor_id = rd.placement_id::text AND rd.date BETWEEN m.date_start AND m.date_end
+    JOIN double_click.import_metadata im USING (import_record_id)
+    LEFT JOIN vendor_ids.alignment_conflicts c ON m.li_code = c.li_code AND (rd.date BETWEEN c.date_start AND c.date_end)
+    WHERE {1} AND m.is_deleted = false AND c.li_code IS NULL
+    group by rd.date, m.li_code, m.creative_rtb_id, im.report_time_zone
+    order by date desc;
+"""
 def generate_expected_data_temp_table(connection, processing_id_type, processing_id):
     temp_table_name = TEMP_TABLE_BASE_NAME.format(processing_id.replace("-","")).lower()
-    where_clause_string = PROCESSING_TYPE[processing_id_type].format(processing_id)
+    where_clause_string = CONDITION_STRING_BY_PROCESSING_ID_TYPE[processing_id_type].format(processing_id)
 
-    
+    # Insert records for flights with no creative conflicts of any kind
+    build_expected_data_temp_table_base_query = BUILD_EXPECTED_DATA_TEMP_TABLE_BASE_QUERY.format(temp_table_name, where_clause_string)
+    connection.execute(build_expected_data_temp_table_base_query)
 
-    build_temp_table_query = EXPECTED_DATA_BASE_QUERY.format(temp_table_name, where_clause_string)
-
-    connection.execute(build_temp_table_query)
+    # Insert records for flights with within flight creative conflict only
+    insert_within_flight_creative_conflict_data_to_temp_table(connection, temp_table_name, processing_id_type, processing_id)
 
     metadata = MetaData(connection, reflect=True)
     return Table(temp_table_name, metadata, autoload=True, autoload_with=connection)
 
-# calculate diffs against final results table
+
+# This query has two conditions that are dependent upon whether or not the processing id is li_code or import_id
+# See WITHIN_FLIGHT_CREATIVE_CONFLICT_QUERY_CONDITIONS_BY_PROCESSING_ID_TYPE
+INSERT_WITHIN_FLIGHT_CREATIVE_CONFLICT_BASE_QUERY = """
+    INSERT INTO {0} (
+        SELECT rd2.date, substring(tups.li_code, 4) as flight_id, NULL as creative_id, SUM(rd2.impressions) as impressions, 
+            SUM(rd2.clicks) as clicks, 'doubleclick'::TEXT as provider, im.report_time_zone as time_zone, 
+            now() as updated_at, FALSE as is_deleted 
+        FROM double_click.raw_delivery rd2
+        JOIN (
+            SELECT m.vendor_id, c.report_date AS date, m.li_code, m.vendor FROM static.calendar c 
+            JOIN vendor_ids.maps m ON c.report_date BETWEEN m.date_start AND m.date_end
+            JOIN {1} i on i.vendor_id =  m.vendor_id AND m.date_start <= max_date AND m.date_end >= min_date 
+            JOIN vendor_ids.alignment_conflicts cf on m.li_code = cf.li_code 
+                AND (c.report_date BETWEEN cf.date_start AND cf.date_end)
+            WHERE m.is_deleted = FALSE AND cf.li_code = cf.li_code_2
+            AND cf.li_code NOT IN (SELECT c2.li_code FROM vendor_ids.alignment_conflicts c2 WHERE c2.li_code != c2.li_code_2)
+            GROUP BY 1, 2, 3, 4
+            ) tups ON rd2.placement_id::text = tups.vendor_id AND rd2.date = tups.date
+        JOIN double_click.import_metadata im ON rd2.import_record_id = im.import_record_id
+        WHERE {2}
+        GROUP BY rd2.date, tups.li_code, im.report_time_zone
+    );
+"""
+RELEVANT_ID_MAPS_FOR_LI_CODE =   """(
+                            SELECT vendor_id, MIN(date_start) as min_date, MAX(date_end) as max_date FROM vendor_ids.maps
+                            WHERE li_code = '{0}'
+                            GROUP BY 1 )
+                        """
+LI_CODE_CONDITION =   """ 
+                            tups.li_code = '{0}' 
+                        """
+RELEVANT_ID_MAPS_FOR_IMPORT_ID = """ (
+                            SELECT placement_id::text as vendor_id, MIN(date) as min_date , MAX(date) as max_date 
+                                FROM double_click.raw_delivery
+                            WHERE import_record_id = {0}
+                            GROUP BY 1 )
+                        """
+IMPORT_ID_CONDITION = """ 
+                            rd2.import_record_id = {0} 
+                        """
+WITHIN_FLIGHT_CREATIVE_CONFLICT_QUERY_CONDITIONS_BY_PROCESSING_ID_TYPE = {
+    LI_CODE_STRING : (RELEVANT_ID_MAPS_FOR_LI_CODE, LI_CODE_CONDITION),
+    IMPORT_ID_STRING : (RELEVANT_ID_MAPS_FOR_IMPORT_ID, IMPORT_ID_CONDITION)
+}
+# Inserts records for flights with within flight creative conflicts only
+def insert_within_flight_creative_conflict_data_to_temp_table(connection, temp_table_name, processing_id_type, processing_id):
+    conditional_query_tuple = WITHIN_FLIGHT_CREATIVE_CONFLICT_QUERY_CONDITIONS_BY_PROCESSING_ID_TYPE[processing_id_type]
+    insert_within_flight_creative_conflict_query = INSERT_WITHIN_FLIGHT_CREATIVE_CONFLICT_BASE_QUERY.format(
+        temp_table_name,
+        conditional_query_tuple[0].format(processing_id),
+        conditional_query_tuple[1].format(processing_id)
+    )
+    connection.execute(insert_within_flight_creative_conflict_query)
+
+
+# Calculate diffs against final results table
 OUTPUT_SCHEMA = 'snoopy'
 OUTPUT_TABLE = 'delivery_by_flight_creative_day'
 def calculate_diffs_and_writes_to_output_table(connection, temp_table, flight_ids_affected, perform_deletions):
     flight_ids_affected_string = "(" + ",".join(["'" + str(id) + "'" for id in flight_ids_affected]) + ")"
 
-    metadata = MetaData(connection, reflect=True, schema=OUTPUT_SCHEMA)
-    output_table = Table(OUTPUT_TABLE, metadata, autoload=True, autoload_with=connection)
+    # Filter warnings due to partial index reflection in SqlAlchemy
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=sa_exc.SAWarning)
 
-    # lock rows; lock timeout should be caught, and force a retry
+        metadata = MetaData(connection, reflect=True, schema=OUTPUT_SCHEMA)
+        output_table = Table(OUTPUT_TABLE, metadata, autoload=True, autoload_with=connection)
+
+    # Lock rows; lock timeout should be caught, and force a retry
     lock_rows_query = """
         SELECT 1
         FROM {0}
         WHERE flight_id IN {1}
         FOR UPDATE;
-    """.format(output_table.schema + "." + output_table.name, flight_ids_affected_string)
+    """.format(output_table.schema + "." + output_table.name,
+               flight_ids_affected_string)
     connection.execute(lock_rows_query)
 
     deleted = []
     if perform_deletions:
-        # do deletions
+        # Do deletions
         deleted_query = """
             UPDATE {0} output
             SET is_deleted = TRUE
             WHERE flight_id IN {1} AND NOT EXISTS (
                 SELECT flight_id, creative_id, date
                 FROM {2} temp
-                WHERE output.flight_id = temp.flight_id AND output.creative_id = temp.creative_id AND output.date = temp.date AND output.is_deleted = FALSE
-            ) RETURNING flight_id, creative_id, date;""".format(output_table.schema + "." + output_table.name, flight_ids_affected_string, temp_table.name)
+                WHERE output.flight_id = temp.flight_id AND output.creative_id = temp.creative_id 
+                    AND output.date = temp.date AND output.is_deleted = FALSE
+            ) RETURNING flight_id, creative_id, date;""".format(output_table.schema + "." + output_table.name,
+                                                                flight_ids_affected_string,
+                                                                temp_table.name)
         deleted = [dict(row) for row in connection.execute(deleted_query).fetchall()]
 
-    # do update / insertion together
+    # Do updates / insertions together
     delete_for_update_query = """
         DELETE
         FROM {0} output
             USING {1} temp
-        WHERE output.flight_id = temp.flight_id AND output.creative_id = temp.creative_id AND output.date = temp.date;""".format(output_table.schema + "." + output_table.name, temp_table.name)
+        WHERE output.flight_id = temp.flight_id AND output.creative_id = temp.creative_id AND output.date = temp.date;""".format(
+                                                                output_table.schema + "." + output_table.name,
+                                                                temp_table.name)
     connection.execute(delete_for_update_query)
 
     insert_for_update_query = """
         INSERT INTO {0} (
             SELECT *
             FROM {1} temp
-        ) RETURNING *;""".format(output_table.schema + "." + output_table.name, temp_table.name)
+        ) RETURNING *;""".format(output_table.schema + "." + output_table.name,
+                                 temp_table.name)
     inserted = [dict(row) for row in connection.execute(insert_for_update_query).fetchall()]
 
     return (deleted, inserted)

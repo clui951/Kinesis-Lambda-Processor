@@ -51,7 +51,7 @@ def setup_and_teardown_for_each_test(connection):
 ##### Tests #####
 #################
 
-def test_process_processing_id_flight_id_with_empty_table_populate_expected_output(connection):
+def test_process_flight_id_with_empty_table_populate_expected_output(connection):
 	truncate_output_table(connection)
 	h.process_processing_id(connection, 'li_code', 'LI-123456')
 	h.process_processing_id(connection, 'li_code', 'LI-7891011')
@@ -59,27 +59,27 @@ def test_process_processing_id_flight_id_with_empty_table_populate_expected_outp
 	results = select_all_from_output_table(connection)
 	assert get_standard_output_data() == results
 
-def test_process_processing_id_import_id_with_empty_table_populate_expected_output(connection):
+def test_process_import_id_with_empty_table_populate_expected_output(connection):
 	truncate_output_table(connection)
 	h.process_processing_id(connection, 'import_id', '1')
 
 	results = select_all_from_output_table(connection)
 	assert get_standard_output_data() == results
 
-def test_process_processing_id_flight_id_with_deleted_rows_populate_marks_as_deleted(connection):
+def test_process_flight_id_with_deleted_rows_populate_marks_as_deleted(connection):
 	connection.execute("""
 			INSERT INTO {} (date, flight_id, creative_id, impressions, clicks, provider, time_zone, is_deleted) 
-			VALUES ('2018-05-05', '123456', '1111111', 999, 999, 'DoubleClick', 'America/New_York', 'f');
+			VALUES ('2018-05-05', '123456', '1111111', 999, 999, 'doubleclick', 'America/New_York', 'f');
 		""".format(OUTPUT_TABLE_FULL_NAME))
 
 	h.process_processing_id(connection, 'li_code', 'LI-123456')
 
 	results = select_all_from_output_table(connection)
 	expected = get_standard_output_data()
-	expected.add((datetime.date(2018, 5, 5), '123456', '1111111', 999, 999, 'DoubleClick', 'America/New_York', True))
+	expected.add((datetime.date(2018, 5, 5), '123456', '1111111', 999, 999, 'doubleclick', 'America/New_York', True))
 	assert expected == results
 
-def test_process_processing_id_flight_id_with_undeleted_rows_populate_marks_as_not_deleted(connection):
+def test_process_flight_id_with_undeleted_rows_populate_marks_as_not_deleted(connection):
 	connection.execute("UPDATE {} SET is_deleted = TRUE WHERE flight_id = '123456';".format(OUTPUT_TABLE_FULL_NAME))
 
 	h.process_processing_id(connection, 'li_code', 'LI-123456')
@@ -87,7 +87,7 @@ def test_process_processing_id_flight_id_with_undeleted_rows_populate_marks_as_n
 	results = select_all_from_output_table(connection)
 	assert get_standard_output_data() == results
 
-def test_process_processing_id_flight_id_with_updated_data_populate_updates_data(connection):
+def test_process_flight_id_with_updated_data_populate_updates_data(connection):
 	connection.execute("UPDATE {} SET clicks = 0 WHERE flight_id = '123456';".format(OUTPUT_TABLE_FULL_NAME))
 
 	h.process_processing_id(connection, 'li_code', 'LI-123456')
@@ -95,7 +95,7 @@ def test_process_processing_id_flight_id_with_updated_data_populate_updates_data
 	results = select_all_from_output_table(connection)
 	assert get_standard_output_data() == results
 
-def test_process_processing_id_flight_id_with_new_data_populate_new_data(connection):
+def test_process_flight_id_with_new_data_populate_new_data(connection):
 	connection.execute("DELETE FROM {} WHERE flight_id = '123456' AND date = '2018-05-01';".format(OUTPUT_TABLE_FULL_NAME))
 
 	h.process_processing_id(connection, 'li_code', 'LI-123456')
@@ -103,7 +103,7 @@ def test_process_processing_id_flight_id_with_new_data_populate_new_data(connect
 	results = select_all_from_output_table(connection)
 	assert get_standard_output_data() == results
 
-def test_process_processing_id_flight_ids_with_deleted_vendor_ids_maps_populate_marks_as_deleted(connection):
+def test_process_flight_ids_with_deleted_vendor_ids_maps_populate_marks_as_deleted(connection):
 	truncate_output_table(connection)
 	connection.execute("UPDATE vendor_ids.maps SET is_deleted = TRUE WHERE li_code = 'LI-123456';")
 
@@ -119,7 +119,7 @@ def test_process_processing_id_flight_ids_with_deleted_vendor_ids_maps_populate_
 		expected_results.add(tup)
 	assert  expected_results == results
 
-def test_process_processing_id_import_id_with_no_resulting_data_populate_nothing(connection):
+def test_process_import_id_with_no_resulting_data_populate_nothing(connection):
 	truncate_output_table(connection)
 	connection.execute("UPDATE vendor_ids.maps SET is_deleted = TRUE;")
 
@@ -128,7 +128,7 @@ def test_process_processing_id_import_id_with_no_resulting_data_populate_nothing
 	results = select_all_from_output_table(connection)
 	assert  set() == results
 
-def test_process_processing_id_flight_id_with_no_resulting_data_populate_deletes_all_corresponding(connection):
+def test_process_flight_id_with_no_resulting_data_populate_deletes_all_corresponding(connection):
 	# if no resulting data generated from upstream, previously corresponding data must be deleted
 	connection.execute("UPDATE vendor_ids.maps SET is_deleted = TRUE WHERE li_code = 'LI-123456';")
 
@@ -145,7 +145,7 @@ def test_process_processing_id_flight_id_with_no_resulting_data_populate_deletes
 		expected_results.add(tup)
 	assert  expected_results == results
 
-def test_process_processing_id_flight_id_with_alignment_conflict_populate_deletes_corresponding(connection):
+def test_process_flight_id_with_alignment_conflict_populate_deletes_corresponding(connection):
 	connection.execute("""INSERT INTO vendor_ids.alignment_conflicts (li_code, date_start, date_end)
 							VALUES ('LI-123456', '2018-04-30', '2018-05-03');""")
 
@@ -161,6 +161,94 @@ def test_process_processing_id_flight_id_with_alignment_conflict_populate_delete
 			tup = tuple(tuplst)
 		expected_results.add(tup)
 	assert  expected_results == results
+
+def test_process_flight_id_with_within_flight_creative_conflict_populates_expected(connection):
+	truncate_output_table(connection)
+	connection.execute("TRUNCATE vendor_ids.maps;")
+	connection.execute("TRUNCATE vendor_ids.alignment_conflicts;")
+	vendor_ids_maps_insert_within_flight_conflict_query = """
+				INSERT INTO vendor_ids.maps (li_code, creative_rtb_id, date_start, date_end, vendor, vendor_id, is_deleted)
+				VALUES
+					('LI-123456', 1111111, '2018-04-30', '2018-05-03', 'doubleclick', '12121212', 'f'),
+					('LI-123456', 2222222, '2018-04-30', '2018-05-03', 'doubleclick', '12121212', 'f');
+			"""
+	connection.execute(vendor_ids_maps_insert_within_flight_conflict_query)
+	vendor_ids_alignment_conflict_within_flight_conflict_query = """
+				INSERT INTO vendor_ids.alignment_conflicts (li_code, li_code_2, date_start, date_end, creative_ids)
+				VALUES ('LI-123456', 'LI-123456', '2018-04-30', '2018-05-03', ARRAY[1111111, 2222222]);
+			"""
+	connection.execute(vendor_ids_alignment_conflict_within_flight_conflict_query)
+
+	h.process_processing_id(connection, 'li_code', 'LI-123456')
+
+	results = select_all_from_output_table(connection)
+	result_dates = set()
+
+	for result in results:
+		assert result[1] == '123456'
+		assert result[2] == None
+		result_dates.add(result[0])
+	assert result_dates == set([datetime.date(2018, 4 , 30), datetime.date(2018, 5 , 1), datetime.date(2018, 5 , 2), datetime.date(2018, 5 , 3)])
+
+def test_process_import_id_within_flight_creative_conflict_populates_expected(connection):
+	truncate_output_table(connection)
+	vendor_ids_maps_set_within_flight_conflict_query = """
+					UPDATE vendor_ids.maps SET vendor_id = '12121212' WHERE li_code = 'LI-123456';
+				"""
+	connection.execute(vendor_ids_maps_set_within_flight_conflict_query)
+	vendor_ids_alignment_conflict_within_flight_conflict_query = """
+					INSERT INTO vendor_ids.alignment_conflicts (li_code, li_code_2, date_start, date_end, creative_ids)
+					VALUES ('LI-123456', 'LI-123456', '2018-04-30', '2018-05-03', ARRAY[1111111, 2222222]);
+				"""
+	connection.execute(vendor_ids_alignment_conflict_within_flight_conflict_query)
+
+	h.process_processing_id(connection, 'import_id', '1')
+
+	standard_output_data_flight_7891011 = get_standard_output_data_flight7891011()
+	results = select_all_from_output_table(connection)
+	for result in results:
+		if result[1] == '123456':
+			assert result[2] == None
+		if result[2] == '7891011':
+			assert result in standard_output_data_flight_7891011
+
+def test_process_flight_id_both_within_and_not_within_flight_creative_conflict_populates_none(connection):
+	truncate_output_table(connection)
+	connection.execute("TRUNCATE vendor_ids.maps;")
+	connection.execute("TRUNCATE vendor_ids.alignment_conflicts;")
+	vendor_ids_maps_insert_within_flight_conflict_query = """
+				INSERT INTO vendor_ids.maps (li_code, creative_rtb_id, date_start, date_end, vendor, vendor_id, is_deleted)
+				VALUES
+					('LI-123456', 1111111, '2018-04-30', '2018-05-03', 'doubleclick', '12121212', 'f'),
+					('LI-123456', 2222222, '2018-04-30', '2018-05-03', 'doubleclick', '12121212', 'f');
+			"""
+	connection.execute(vendor_ids_maps_insert_within_flight_conflict_query)
+	vendor_ids_alignment_conflict_within_flight_conflict_query = """
+				INSERT INTO vendor_ids.alignment_conflicts (li_code, li_code_2, date_start, date_end, creative_ids)
+				VALUES ('LI-123456', 'LI-123456', '2018-04-30', '2018-05-03', ARRAY[1111111, 2222222]),
+						('LI-123456', 'LI-999999', '2018-04-30', '2018-05-03', ARRAY[1111111, 9999999]);
+			"""
+	connection.execute(vendor_ids_alignment_conflict_within_flight_conflict_query)
+
+	h.process_processing_id(connection, 'li_code', 'LI-123456')
+
+	results = select_all_from_output_table(connection)
+	assert results == set()
+
+def test_process_flight_id_with_previous_within_flight_creative_conflict_populates_expected(connection):
+	truncate_output_table(connection)
+	# add previous within flight creative conflict record to output table
+	connection.execute("""
+					INSERT INTO {} (date, flight_id, creative_id, impressions, clicks, provider, time_zone, is_deleted)
+					VALUES ('2018-05-01', '123456', NULL, 999, 999, 'doubleclick', 'America/New_York', 'f');
+				""".format(OUTPUT_TABLE_FULL_NAME))
+
+	h.process_processing_id(connection, 'li_code', 'LI-123456')
+
+	results = select_all_from_output_table(connection)
+	expected = get_standard_output_data_flight123456()
+	expected.add((datetime.date(2018, 5, 1), '123456', None, 999, 999, 'doubleclick', 'America/New_York', True))
+	assert expected == results
 
 def test_generate_expected_data_temp_table_processing_id_creates_correct_temp_table(connection):
 	with connection.begin() as transaction:
@@ -180,7 +268,7 @@ def test_calculate_diffs_and_writes_to_output_table_temp_table_and_do_perform_de
 		# change output table
 		connection.execute("""
 				INSERT INTO {} (date, flight_id, creative_id, impressions, clicks, provider, time_zone, is_deleted) 
-				VALUES ('2018-05-05', '7891011', '1111111', 999, 999, 'DoubleClick', 'America/New_York', 'f');
+				VALUES ('2018-05-05', '7891011', '1111111', 999, 999, 'doubleclick', 'America/New_York', 'f');
 			""".format(OUTPUT_TABLE_FULL_NAME))
 
 		# load temp table and calculate diffs
@@ -191,14 +279,14 @@ def test_calculate_diffs_and_writes_to_output_table_temp_table_and_do_perform_de
 		assert deleted == [{'flight_id' : '7891011' , 'creative_id' : '1111111', 'date' : datetime.date(2018, 5, 5)}]
 
 		expected_inserted = [
-						{'date': datetime.date(2018, 4, 30), 'flight_id':'7891011', 'creative_id':'3333333', 'impressions':1809, 'clicks':2, 'provider':'DoubleClick', 'time_zone':'America/New_York', 'updated_at':None, 'is_deleted': False},
-						{'date': datetime.date(2018, 4, 30), 'flight_id':'7891011', 'creative_id':'4444444', 'impressions':19032, 'clicks':4, 'provider':'DoubleClick','time_zone':'America/New_York', 'updated_at':None, 'is_deleted': False},
-						{'date': datetime.date(2018, 4, 30), 'flight_id':'7891011', 'creative_id':'5555555', 'impressions':5588, 'clicks':1, 'provider':'DoubleClick', 'time_zone':'America/New_York', 'updated_at':None, 'is_deleted': False}
+						{'date': datetime.date(2018, 4, 30), 'flight_id':'7891011', 'creative_id':'3333333', 'impressions':1809, 'clicks':2, 'provider':'doubleclick', 'time_zone':'America/New_York', 'updated_at':None, 'is_deleted': False},
+						{'date': datetime.date(2018, 4, 30), 'flight_id':'7891011', 'creative_id':'4444444', 'impressions':19032, 'clicks':4, 'provider':'doubleclick','time_zone':'America/New_York', 'updated_at':None, 'is_deleted': False},
+						{'date': datetime.date(2018, 4, 30), 'flight_id':'7891011', 'creative_id':'5555555', 'impressions':5588, 'clicks':1, 'provider':'doubleclick', 'time_zone':'America/New_York', 'updated_at':None, 'is_deleted': False}
 					]
 
 		# sort both lists for comparison; using impressions, but any unique value will be okay
-		inserted, expected_inserted = [sorted(l, key=itemgetter('impressions')) 
-                      for l in (inserted, expected_inserted)]
+		inserted, expected_inserted = [sorted(l, key=itemgetter('impressions'))
+					  for l in (inserted, expected_inserted)]
 
 		assert inserted == expected_inserted
 
@@ -252,7 +340,7 @@ def load_upstream_table_data(connection):
 	import_records_insert_query = """
 			INSERT INTO import.records (id, vendor)
 			VALUES
-				(1, 'DoubleClick');
+				(1, 'doubleclick');
 		"""
 	connection.execute(import_records_insert_query)
 
@@ -267,31 +355,35 @@ def load_upstream_table_data(connection):
 		"""
 	connection.execute(vendor_ids_maps_insert_query)
 
+	static_calendar_insert_query = """INSERT INTO static.calendar (select i::date from generate_series('2018-04-01', '2018-05-31', '1 day'::interval) i);"""
+	connection.execute(static_calendar_insert_query)
+
 def truncate_all_tables(connection):
 	connection.execute("TRUNCATE double_click.raw_delivery;")
 	connection.execute("TRUNCATE double_click.import_metadata;")
 	connection.execute("TRUNCATE import.records CASCADE;")
 	connection.execute("TRUNCATE vendor_ids.maps;")
 	connection.execute("TRUNCATE vendor_ids.alignment_conflicts;")
+	connection.execute("TRUNCATE static.calendar;")
 
 def truncate_output_table(connection):
-	connection.execute("TRUNCATE {};".format(OUTPUT_TABLE_FULL_NAME))		
+	connection.execute("TRUNCATE {};".format(OUTPUT_TABLE_FULL_NAME))
 
 def insert_standard_output_data(connection):
 	insert_output_query = """
 			INSERT INTO {} ("date", flight_id, creative_id, impressions, clicks, provider, time_zone, is_deleted) 
 			VALUES 	
-					('2018-05-03', '123456', '1111111', 50714, 7, 'DoubleClick', 'America/New_York', 'f'),
-					('2018-05-03', '123456', '2222222', 1044, 0, 'DoubleClick', 'America/New_York', 'f'),
-					('2018-05-02', '123456', '1111111', 58977, 3, 'DoubleClick', 'America/New_York', 'f'),
-					('2018-05-02', '123456', '2222222', 905, 2, 'DoubleClick', 'America/New_York', 'f'),
-					('2018-05-01', '123456', '1111111', 42303, 3, 'DoubleClick', 'America/New_York', 'f'),
-					('2018-05-01', '123456', '2222222', 2736, 2, 'DoubleClick', 'America/New_York', 'f'),
-					('2018-04-30', '123456', '1111111', 43841, 4, 'DoubleClick', 'America/New_York', 'f'),
-					('2018-04-30', '123456', '2222222', 2941, 2, 'DoubleClick', 'America/New_York', 'f'),
-					('2018-04-30', '7891011', '3333333', 1809, 2, 'DoubleClick', 'America/New_York', 'f'),
-					('2018-04-30', '7891011', '4444444', 19032, 4, 'DoubleClick', 'America/New_York', 'f'),
-					('2018-04-30', '7891011', '5555555', 5588, 1, 'DoubleClick', 'America/New_York', 'f');
+					('2018-05-03', '123456', '1111111', 50714, 7, 'doubleclick', 'America/New_York', 'f'),
+					('2018-05-03', '123456', '2222222', 1044, 0, 'doubleclick', 'America/New_York', 'f'),
+					('2018-05-02', '123456', '1111111', 58977, 3, 'doubleclick', 'America/New_York', 'f'),
+					('2018-05-02', '123456', '2222222', 905, 2, 'doubleclick', 'America/New_York', 'f'),
+					('2018-05-01', '123456', '1111111', 42303, 3, 'doubleclick', 'America/New_York', 'f'),
+					('2018-05-01', '123456', '2222222', 2736, 2, 'doubleclick', 'America/New_York', 'f'),
+					('2018-04-30', '123456', '1111111', 43841, 4, 'doubleclick', 'America/New_York', 'f'),
+					('2018-04-30', '123456', '2222222', 2941, 2, 'doubleclick', 'America/New_York', 'f'),
+					('2018-04-30', '7891011', '3333333', 1809, 2, 'doubleclick', 'America/New_York', 'f'),
+					('2018-04-30', '7891011', '4444444', 19032, 4, 'doubleclick', 'America/New_York', 'f'),
+					('2018-04-30', '7891011', '5555555', 5588, 1, 'doubleclick', 'America/New_York', 'f');
 		""".format(OUTPUT_TABLE_FULL_NAME)
 	connection.execute(insert_output_query)
 
@@ -299,16 +391,23 @@ def select_all_from_output_table(connection):
 	return {tuple(rowproxy.values()) for rowproxy in connection.execute("select date, flight_id, creative_id, impressions, clicks, provider, time_zone, is_deleted from {} ".format(OUTPUT_TABLE_FULL_NAME)).fetchall()}
 
 def get_standard_output_data():
+	return get_standard_output_data_flight123456().union(get_standard_output_data_flight7891011())
+
+def get_standard_output_data_flight7891011():
 	return {
-		(datetime.date(2018, 5, 3), '123456', '1111111', 50714, 7, 'DoubleClick', 'America/New_York', False),
-		(datetime.date(2018, 5, 3), '123456', '2222222', 1044, 0, 'DoubleClick', 'America/New_York', False),
-		(datetime.date(2018, 5, 2), '123456', '1111111', 58977, 3, 'DoubleClick', 'America/New_York', False),
-		(datetime.date(2018, 5, 2), '123456', '2222222', 905, 2, 'DoubleClick', 'America/New_York', False),
-		(datetime.date(2018, 5, 1), '123456', '1111111', 42303, 3, 'DoubleClick', 'America/New_York', False),
-		(datetime.date(2018, 5, 1), '123456', '2222222', 2736, 2, 'DoubleClick', 'America/New_York', False),
-		(datetime.date(2018, 4, 30), '123456', '1111111', 43841, 4, 'DoubleClick', 'America/New_York', False),
-		(datetime.date(2018, 4, 30), '123456', '2222222', 2941, 2, 'DoubleClick', 'America/New_York', False),
-		(datetime.date(2018, 4, 30), '7891011', '3333333', 1809, 2, 'DoubleClick', 'America/New_York', False),
-		(datetime.date(2018, 4, 30), '7891011', '4444444', 19032, 4, 'DoubleClick', 'America/New_York', False),
-		(datetime.date(2018, 4, 30), '7891011', '5555555', 5588, 1, 'DoubleClick', 'America/New_York', False)
+		(datetime.date(2018, 4, 30), '7891011', '3333333', 1809, 2, 'doubleclick', 'America/New_York', False),
+		(datetime.date(2018, 4, 30), '7891011', '4444444', 19032, 4, 'doubleclick', 'America/New_York', False),
+		(datetime.date(2018, 4, 30), '7891011', '5555555', 5588, 1, 'doubleclick', 'America/New_York', False)
+	}
+
+def get_standard_output_data_flight123456():
+	return {
+		(datetime.date(2018, 5, 3), '123456', '1111111', 50714, 7, 'doubleclick', 'America/New_York', False),
+		(datetime.date(2018, 5, 3), '123456', '2222222', 1044, 0, 'doubleclick', 'America/New_York', False),
+		(datetime.date(2018, 5, 2), '123456', '1111111', 58977, 3, 'doubleclick', 'America/New_York', False),
+		(datetime.date(2018, 5, 2), '123456', '2222222', 905, 2, 'doubleclick', 'America/New_York', False),
+		(datetime.date(2018, 5, 1), '123456', '1111111', 42303, 3, 'doubleclick', 'America/New_York', False),
+		(datetime.date(2018, 5, 1), '123456', '2222222', 2736, 2, 'doubleclick', 'America/New_York', False),
+		(datetime.date(2018, 4, 30), '123456', '1111111', 43841, 4, 'doubleclick', 'America/New_York', False),
+		(datetime.date(2018, 4, 30), '123456', '2222222', 2941, 2, 'doubleclick', 'America/New_York', False)
 	}

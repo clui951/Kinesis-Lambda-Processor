@@ -3,6 +3,13 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE SCHEMA util;
 CREATE TYPE util.import_status AS ENUM('IN PROGRESS','COMPLETE','FAILED');
 
+
+CREATE SCHEMA static;
+CREATE TABLE static.calendar (
+	report_date date NOT NULL,
+	PRIMARY KEY (report_date)
+);
+
 -- double_click.raw_delivery
 CREATE TABLE double_click.raw_delivery (
 	import_record_id int4 NOT NULL,
@@ -92,12 +99,13 @@ CREATE TABLE import.records (
 CREATE TABLE snoopy.delivery_by_flight_creative_day (
 	"date" date NOT NULL,
 	flight_id text NOT NULL,
-	creative_id text NOT NULL,
+	creative_id text,
 	impressions int8,
 	clicks int8,
 	provider text,
 	time_zone text,
 	updated_at timestamp,
-	is_deleted bool,
-	PRIMARY KEY (creative_id,flight_id,"date")
+	is_deleted bool
 );
+CREATE UNIQUE INDEX delivery_3col_unique_idx ON snoopy.delivery_by_flight_creative_day (date, flight_id, creative_id) WHERE creative_id IS NOT NULL;
+CREATE UNIQUE INDEX delivery_2col_unique_idx ON snoopy.delivery_by_flight_creative_day (date, flight_id) WHERE creative_id IS NULL;
