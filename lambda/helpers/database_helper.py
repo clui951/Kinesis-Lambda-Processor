@@ -166,7 +166,8 @@ def calculate_diffs_and_writes_to_output_table(connection, temp_table, flight_id
             WHERE flight_id IN {1} AND NOT EXISTS (
                 SELECT flight_id, creative_id, date
                 FROM {2} temp
-                WHERE output.flight_id = temp.flight_id AND output.creative_id = temp.creative_id 
+                WHERE output.flight_id = temp.flight_id
+                    AND (output.creative_id = temp.creative_id OR output.creative_id IS NOT DISTINCT FROM temp.creative_id)
                     AND output.date = temp.date AND output.is_deleted = FALSE
             ) RETURNING flight_id, creative_id, date;""".format(output_table.schema + "." + output_table.name,
                                                                 flight_ids_affected_string,
@@ -178,9 +179,10 @@ def calculate_diffs_and_writes_to_output_table(connection, temp_table, flight_id
         DELETE
         FROM {0} output
             USING {1} temp
-        WHERE output.flight_id = temp.flight_id AND output.creative_id = temp.creative_id AND output.date = temp.date;""".format(
-                                                                output_table.schema + "." + output_table.name,
-                                                                temp_table.name)
+        WHERE output.flight_id = temp.flight_id 
+            AND (output.creative_id = temp.creative_id OR output.creative_id IS NOT DISTINCT FROM temp.creative_id) 
+            AND output.date = temp.date;""".format(output_table.schema + "." + output_table.name,
+                                                    temp_table.name)
     connection.execute(delete_for_update_query)
 
     insert_for_update_query = """
