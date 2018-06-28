@@ -2,7 +2,8 @@ import logging
 import warnings
 
 from sqlalchemy import exc as sa_exc
-from sqlalchemy import create_engine, select, Table, MetaData, and_
+from sqlalchemy import create_engine, Table, MetaData, select, text, and_, or_, exists
+from sqlalchemy.sql.functions import current_timestamp
 
 # Logger settings
 logger = logging.getLogger()
@@ -148,49 +149,42 @@ def calculate_diffs_and_writes_to_output_table(connection, temp_table, flight_id
         output_table = Table(OUTPUT_TABLE, metadata, autoload=True, autoload_with=connection)
 
     # Lock rows; lock timeout should be caught, and force a retry
-    lock_rows_query = """
-        SELECT 1
-        FROM {0}
-        WHERE flight_id IN {1}
-        FOR UPDATE;
-    """.format(output_table.schema + "." + output_table.name,
-               flight_ids_affected_string)
-    connection.execute(lock_rows_query)
+    output_table.select().where(output_table.c.flight_id.in_([str(id) for id in flight_ids_affected])).with_for_update().execute()
 
     deleted = []
     if perform_deletions:
         # Do deletions
-        deleted_query = """
-            UPDATE {0} output
-            SET is_deleted = TRUE, updated_at = now()
-            WHERE flight_id IN {1} AND NOT EXISTS (
-                SELECT flight_id, creative_id, date
-                FROM {2} temp
-                WHERE output.flight_id = temp.flight_id
-                    AND (output.creative_id = temp.creative_id OR output.creative_id IS NOT DISTINCT FROM temp.creative_id)
-                    AND output.date = temp.date AND output.is_deleted = FALSE
-            ) RETURNING flight_id, creative_id, date;""".format(output_table.schema + "." + output_table.name,
-                                                                flight_ids_affected_string,
-                                                                temp_table.name)
-        deleted = [dict(row) for row in connection.execute(deleted_query).fetchall()]
+        deleted_query = output_table.update().returning(output_table.c.flight_id, output_table.c.creative_id, output_table.c.date).where(
+            and_(
+                output_table.c.flight_id.in_([str(id) for id in flight_ids_affected]),
+                ~exists().where(
+                    and_(
+                        output_table.c.flight_id == temp_table.c.flight_id,
+                        or_(
+                            output_table.c.creative_id == temp_table.c.creative_id,
+                            output_table.c.creative_id.isnot_distinct_from(temp_table.c.creative_id)
+                        ),
+                        output_table.c.date == temp_table.c.date
+                    )
+                )
+            )
+        ).values(is_deleted = True, updated_at = current_timestamp())
+        deleted = [dict(row) for row in deleted_query.execute().fetchall()]
 
     # Do updates / insertions together
-    delete_for_update_query = """
-        DELETE
-        FROM {0} output
-            USING {1} temp
-        WHERE output.flight_id = temp.flight_id 
-            AND (output.creative_id = temp.creative_id OR output.creative_id IS NOT DISTINCT FROM temp.creative_id) 
-            AND output.date = temp.date;""".format(output_table.schema + "." + output_table.name,
-                                                    temp_table.name)
-    connection.execute(delete_for_update_query)
+    delete_for_update_query = output_table.delete().where(
+        and_(
+            output_table.c.flight_id == temp_table.c.flight_id,
+            or_(
+                output_table.c.creative_id == temp_table.c.creative_id,
+                output_table.c.creative_id.isnot_distinct_from(temp_table.c.creative_id)
+            ),
+            output_table.c.date == temp_table.c.date
+        )
+    )
+    delete_for_update_query.execute()
 
-    insert_for_update_query = """
-        INSERT INTO {0} (
-            SELECT *
-            FROM {1} temp
-        ) RETURNING *;""".format(output_table.schema + "." + output_table.name,
-                                 temp_table.name)
-    inserted = [dict(row) for row in connection.execute(insert_for_update_query).fetchall()]
+    insert_for_update_query = output_table.insert().returning(text('*')).from_select(temp_table.c, temp_table.select())
+    inserted = [dict(row) for row in insert_for_update_query.execute().fetchall()]
 
     return (deleted, inserted)
