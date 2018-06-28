@@ -162,7 +162,7 @@ def calculate_diffs_and_writes_to_output_table(connection, temp_table, flight_id
         # Do deletions
         deleted_query = """
             UPDATE {0} output
-            SET is_deleted = TRUE
+            SET is_deleted = TRUE, updated_at = now()
             WHERE flight_id IN {1} AND NOT EXISTS (
                 SELECT flight_id, creative_id, date
                 FROM {2} temp
