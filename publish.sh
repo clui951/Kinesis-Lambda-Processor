@@ -21,7 +21,7 @@ select psd in "Prod" "Staging" "Dev"; do
     esac
 done
 
-echo "Are you sure you want to publish to $ENVIRONMENT_CHOICE ($FUNCTION_CHOICE)?"
+echo -e "\nAre you sure you want to publish to $ENVIRONMENT_CHOICE ($FUNCTION_CHOICE)?"
 select yn in "Yes" "No"; do
     case $yn in
         Yes ) break;;
@@ -46,13 +46,18 @@ cd $OLDPWD
 
 
 print_linebreak
-echo "Updating lambda code and publishing new version for $FUNCTION_CHOICE"
-UPDATE_FUNCTION_CODE_RESPONSE=$(aws lambda update-function-code --publish --function-name $FUNCTION_CHOICE --zip-file fileb://KinesisLambdaProcessor.zip)
+echo -e "Updating lambda code and publishing new version for $FUNCTION_CHOICE\n"
+UPDATE_FUNCTION_COMMAND="aws lambda update-function-code --publish --function-name $FUNCTION_CHOICE --zip-file fileb://KinesisLambdaProcessor.zip"
+echo "\$ $UPDATE_FUNCTION_COMMAND"
+UPDATE_FUNCTION_CODE_RESPONSE=$($UPDATE_FUNCTION_COMMAND)
 echo $UPDATE_FUNCTION_CODE_RESPONSE
 
 
 print_linebreak
 PUBLISHED_VERSION_NUM=$(echo $UPDATE_FUNCTION_CODE_RESPONSE | grep -Eo 'Version\": \"([0-9]*)\"' | cut -d" " -f2 | tr -d '",') # grabs version number from response code; does not work with $LATEST
 echo "Updating alias $FUNCTION_CHOICE:master to point to published version $PUBLISHED_VERSION_NUM"
-UPDATE_ALIAS_RESPONSE=$(aws lambda update-alias --function-name $FUNCTION_CHOICE --name master --function-version $PUBLISHED_VERSION_NUM)
+UPDATE_ALIAS_COMMAND="aws lambda update-alias --function-name $FUNCTION_CHOICE --name master --function-version $PUBLISHED_VERSION_NUM"
+echo "\$ $UPDATE_ALIAS_COMMAND"
+UPDATE_ALIAS_RESPONSE=$($UPDATE_ALIAS_COMMAND)
 echo $UPDATE_ALIAS_RESPONSE
+echo

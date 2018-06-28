@@ -29,8 +29,10 @@ Logs can be found in CloudWatch > Log Groups > /aws/lambda/kinesis-lambda-proces
 
 ### Consuming from Kinesis Queue
 The Kinesis stream that the processor consumes from is: Kinesis-Lambda-Event-Stream  
-Example write to queue using aws cli:  
+Example write to queue using script or aws cli:  
 ```
+$ ./kinesis-put-record.sh
+# or
 $ aws kinesis put-record --profile default --stream-name Kinesis-Lambda-Event-Stream --partition-key 1468224 --data '{"processing_id_type":"import_id","processing_id":"1468224"}'
 $ aws kinesis put-record --profile default --stream-name Kinesis-Lambda-Event-Stream --partition-key 'LI-568467' --data '{"processing_id_type":"li_code","processing_id":"LI-568467"}'
 ```
