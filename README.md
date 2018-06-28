@@ -25,7 +25,8 @@ kinesis-lambda-processor-staging
 kinesis-lambda-processor-prod  
 When the publish script is run, a new deployment package is shipped to the corresponding lambda function, a new version is published, and the function alias `master` points to the new published version.  
 
-Logs can be found in CloudWatch > Log Groups > /aws/lambda/kinesis-lambda-processor-\<env\>
+Logs can be found in CloudWatch > Log Groups > /aws/lambda/kinesis-lambda-processor-\<env\>  
+Logs are monitored for errors through a CloudWatch filter/metric and alerted through a CloudWatch alarm
 
 ### Consuming from Kinesis Queue
 The Kinesis stream that the processor consumes from is: Kinesis-Lambda-Event-Stream  
