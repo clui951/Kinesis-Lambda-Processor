@@ -26,6 +26,9 @@ def process_processing_id(connection, processing_id_type, processing_id):
         if processing_id_type == LI_CODE_STRING:
             flight_ids_affected = [processing_id[3:]]
             perform_deletions = True
+        elif processing_id_type == FLIGHT_ID_STRING:
+            flight_ids_affected = [processing_id]
+            perform_deletions = True
         else:
             flight_ids_affected = [row[temp_table.c.flight_id] for row in select([temp_table.c.flight_id]).distinct().execute().fetchall()]
             perform_deletions = False
@@ -49,9 +52,11 @@ def set_lock_timeout_for_transaction(connection):
 # Generating expected data temp table
 TEMP_TABLE_BASE_NAME = 'expected_temp_table_{}'
 LI_CODE_STRING = "li_code"
+FLIGHT_ID_STRING = "flight_id"
 IMPORT_ID_STRING = "import_id"
 CONDITION_STRING_BY_PROCESSING_ID_TYPE = {
     LI_CODE_STRING : "m.li_code = '{}'",
+    FLIGHT_ID_STRING : "substring(m.li_code, 4) = '{}'",
     IMPORT_ID_STRING : "im.import_record_id = '{}'"
 }
 
@@ -72,7 +77,7 @@ BUILD_EXPECTED_DATA_TEMP_TABLE_BASE_QUERY = """
 
 
 def generate_expected_data_temp_table(connection, processing_id_type, processing_id):
-    temp_table_name = TEMP_TABLE_BASE_NAME.format(processing_id.replace("-","")).lower()
+    temp_table_name = (TEMP_TABLE_BASE_NAME + processing_id_type).format(processing_id.replace("-","")).lower()
     where_clause_string = CONDITION_STRING_BY_PROCESSING_ID_TYPE[processing_id_type].format(processing_id)
 
     # Insert records for flights with no creative conflicts of any kind
@@ -117,6 +122,14 @@ RELEVANT_ID_MAPS_FOR_LI_CODE =   """(
 LI_CODE_CONDITION =   """ 
                             tups.li_code = '{0}' 
                         """
+RELEVANT_ID_MAPS_FOR_FLIGHT_ID =   """(
+                            SELECT vendor_id, MIN(date_start) as min_date, MAX(date_end) as max_date FROM vendor_ids.maps
+                            WHERE substring(li_code, 4) = '{0}'
+                            GROUP BY 1 )
+                        """
+FLIGHT_ID_CONDITION =   """ 
+                            substring(tups.li_code, 4) = '{0}' 
+                        """
 RELEVANT_ID_MAPS_FOR_IMPORT_ID = """ (
                             SELECT placement_id::text as vendor_id, MIN(date) as min_date , MAX(date) as max_date 
                                 FROM double_click.raw_delivery
@@ -128,6 +141,7 @@ IMPORT_ID_CONDITION = """
                         """
 WITHIN_FLIGHT_CREATIVE_CONFLICT_QUERY_CONDITIONS_BY_PROCESSING_ID_TYPE = {
     LI_CODE_STRING : (RELEVANT_ID_MAPS_FOR_LI_CODE, LI_CODE_CONDITION),
+    FLIGHT_ID_STRING : (RELEVANT_ID_MAPS_FOR_FLIGHT_ID, FLIGHT_ID_CONDITION),
     IMPORT_ID_STRING : (RELEVANT_ID_MAPS_FOR_IMPORT_ID, IMPORT_ID_CONDITION)
 }
 

@@ -45,7 +45,6 @@ def connection(engine):
 def setup_and_teardown_for_each_test(connection):
     # Setup before each test
     reset_upstream_tables(connection)
-    insert_standard_output_data(connection)
     yield
     # Teardown after each test
     truncate_output_table(connection)
@@ -56,7 +55,6 @@ def setup_and_teardown_for_each_test(connection):
 #################
 
 def test_process_flight_id_with_empty_table_populate_expected_output(connection):
-    truncate_output_table(connection)
     h.process_processing_id(connection, 'li_code', 'LI-123456')
     h.process_processing_id(connection, 'li_code', 'LI-7891011')
 
@@ -64,15 +62,23 @@ def test_process_flight_id_with_empty_table_populate_expected_output(connection)
     assert get_standard_output_data() == results
 
 
+def test_process_flight_id_with_empty_table_populate_expected_output(connection):
+    h.process_processing_id(connection, 'flight_id', '123456')
+    h.process_processing_id(connection, 'flight_id', '7891011')
+
+    results = select_all_from_output_table(connection)
+    assert get_standard_output_data() == results
+
+
 def test_process_import_id_with_empty_table_populate_expected_output(connection):
-    truncate_output_table(connection)
     h.process_processing_id(connection, 'import_id', '1')
 
     results = select_all_from_output_table(connection)
     assert get_standard_output_data() == results
 
 
-def test_process_flight_id_with_deleted_rows_populate_marks_as_deleted(connection):
+def test_process_li_code_with_deleted_rows_populate_marks_as_deleted(connection):
+    insert_standard_output_data(connection)
     connection.execute("""
             INSERT INTO {} (date, flight_id, creative_id, impressions, clicks, provider, time_zone, is_deleted) 
             VALUES ('2018-05-05', '123456', '1111111', 999, 999, 'doubleclick', 'America/New_York', 'f');
@@ -86,7 +92,8 @@ def test_process_flight_id_with_deleted_rows_populate_marks_as_deleted(connectio
     assert expected == results
 
 
-def test_process_flight_id_with_undeleted_rows_populate_marks_as_not_deleted(connection):
+def test_process_li_code_with_undeleted_rows_populate_marks_as_not_deleted(connection):
+    insert_standard_output_data(connection)
     connection.execute("UPDATE {} SET is_deleted = TRUE WHERE flight_id = '123456';".format(OUTPUT_TABLE_FULL_NAME))
 
     h.process_processing_id(connection, 'li_code', 'LI-123456')
@@ -95,7 +102,8 @@ def test_process_flight_id_with_undeleted_rows_populate_marks_as_not_deleted(con
     assert get_standard_output_data() == results
 
 
-def test_process_flight_id_with_updated_data_populate_updates_data(connection):
+def test_process_li_code_with_updated_data_populate_updates_data(connection):
+    insert_standard_output_data(connection)
     connection.execute("UPDATE {} SET clicks = 0 WHERE flight_id = '123456';".format(OUTPUT_TABLE_FULL_NAME))
 
     h.process_processing_id(connection, 'li_code', 'LI-123456')
@@ -104,7 +112,8 @@ def test_process_flight_id_with_updated_data_populate_updates_data(connection):
     assert get_standard_output_data() == results
 
 
-def test_process_flight_id_with_new_data_populate_new_data(connection):
+def test_process_li_code_with_new_data_populate_new_data(connection):
+    insert_standard_output_data(connection)
     connection.execute("DELETE FROM {} WHERE flight_id = '123456' AND date = '2018-05-01';".format(OUTPUT_TABLE_FULL_NAME))
 
     h.process_processing_id(connection, 'li_code', 'LI-123456')
@@ -113,8 +122,7 @@ def test_process_flight_id_with_new_data_populate_new_data(connection):
     assert get_standard_output_data() == results
 
 
-def test_process_flight_ids_with_deleted_vendor_ids_maps_populate_marks_as_deleted(connection):
-    truncate_output_table(connection)
+def test_process_li_codes_with_deleted_vendor_ids_maps_populate_marks_as_deleted(connection):
     connection.execute("UPDATE vendor_ids.maps SET is_deleted = TRUE WHERE li_code = 'LI-123456';")
 
     h.process_processing_id(connection, 'li_code', 'LI-123456')
@@ -130,8 +138,23 @@ def test_process_flight_ids_with_deleted_vendor_ids_maps_populate_marks_as_delet
     assert  expected_results == results
 
 
+def test_process_flight_ids_with_deleted_vendor_ids_maps_populate_marks_as_deleted(connection):
+    connection.execute("UPDATE vendor_ids.maps SET is_deleted = TRUE WHERE li_code = 'LI-123456';")
+
+    h.process_processing_id(connection, 'flight_id', '123456')
+    h.process_processing_id(connection, 'flight_id', '7891011')
+
+    results = select_all_from_output_table(connection)
+    standard_results = get_standard_output_data()
+    expected_results = set()
+    for tup in standard_results:
+        if tup[1] == '123456':
+            continue
+        expected_results.add(tup)
+    assert  expected_results == results
+
+
 def test_process_import_id_with_no_resulting_data_populate_nothing(connection):
-    truncate_output_table(connection)
     connection.execute("UPDATE vendor_ids.maps SET is_deleted = TRUE;")
 
     h.process_processing_id(connection, 'import_id', '1')
@@ -140,7 +163,8 @@ def test_process_import_id_with_no_resulting_data_populate_nothing(connection):
     assert  set() == results
 
 
-def test_process_flight_id_with_no_resulting_data_populate_deletes_all_corresponding(connection):
+def test_process_li_code_with_no_resulting_data_populate_deletes_all_corresponding(connection):
+    insert_standard_output_data(connection)
     # if no resulting data generated from upstream, previously corresponding data must be deleted
     connection.execute("UPDATE vendor_ids.maps SET is_deleted = TRUE WHERE li_code = 'LI-123456';")
 
@@ -158,7 +182,8 @@ def test_process_flight_id_with_no_resulting_data_populate_deletes_all_correspon
     assert  expected_results == results
 
 
-def test_process_flight_id_with_alignment_conflict_populate_deletes_corresponding(connection):
+def test_process_li_code_with_alignment_conflict_populate_deletes_corresponding(connection):
+    insert_standard_output_data(connection)
     connection.execute("""INSERT INTO vendor_ids.alignment_conflicts (li_code, date_start, date_end)
                             VALUES ('LI-123456', '2018-04-30', '2018-05-03');""")
 
@@ -176,8 +201,7 @@ def test_process_flight_id_with_alignment_conflict_populate_deletes_correspondin
     assert  expected_results == results
 
 
-def test_process_flight_id_with_within_flight_creative_conflict_populates_expected(connection):
-    truncate_output_table(connection)
+def test_process_li_code_with_within_flight_creative_conflict_populates_expected(connection):
     connection.execute("TRUNCATE vendor_ids.maps;")
     connection.execute("TRUNCATE vendor_ids.alignment_conflicts;")
     vendor_ids_maps_insert_within_flight_conflict_query = """
@@ -205,8 +229,7 @@ def test_process_flight_id_with_within_flight_creative_conflict_populates_expect
     assert result_dates == set([datetime.date(2018, 4 , 30), datetime.date(2018, 5 , 1), datetime.date(2018, 5 , 2), datetime.date(2018, 5 , 3)])
 
 
-def test_process_flight_id_with_within_flight_creative_conflict_twice_no_error(connection):
-    truncate_output_table(connection)
+def test_process_li_code_with_within_flight_creative_conflict_twice_no_error(connection):
     connection.execute("TRUNCATE vendor_ids.maps;")
     connection.execute("TRUNCATE vendor_ids.alignment_conflicts;")
     vendor_ids_maps_insert_within_flight_conflict_query = """
@@ -226,8 +249,35 @@ def test_process_flight_id_with_within_flight_creative_conflict_twice_no_error(c
     h.process_processing_id(connection, 'li_code', 'LI-123456')
 
 
+def test_process_flight_id_with_within_flight_creative_conflict_populates_expected(connection):
+    connection.execute("TRUNCATE vendor_ids.maps;")
+    connection.execute("TRUNCATE vendor_ids.alignment_conflicts;")
+    vendor_ids_maps_insert_within_flight_conflict_query = """
+                INSERT INTO vendor_ids.maps (li_code, creative_rtb_id, date_start, date_end, vendor, vendor_id, is_deleted)
+                VALUES
+                    ('LI-123456', 1111111, '2018-04-30', '2018-05-03', 'doubleclick', '12121212', 'f'),
+                    ('LI-123456', 2222222, '2018-04-30', '2018-05-03', 'doubleclick', '12121212', 'f');
+            """
+    connection.execute(vendor_ids_maps_insert_within_flight_conflict_query)
+    vendor_ids_alignment_conflict_within_flight_conflict_query = """
+                INSERT INTO vendor_ids.alignment_conflicts (li_code, li_code_2, date_start, date_end, creative_ids)
+                VALUES ('LI-123456', 'LI-123456', '2018-04-30', '2018-05-03', ARRAY[1111111, 2222222]);
+            """
+    connection.execute(vendor_ids_alignment_conflict_within_flight_conflict_query)
+
+    h.process_processing_id(connection, 'flight_id', '123456')
+
+    results = select_all_from_output_table(connection)
+    result_dates = set()
+
+    for result in results:
+        assert result[1] == '123456'
+        assert result[2] == None
+        result_dates.add(result[0])
+    assert result_dates == set([datetime.date(2018, 4 , 30), datetime.date(2018, 5 , 1), datetime.date(2018, 5 , 2), datetime.date(2018, 5 , 3)])
+
+
 def test_process_import_id_within_flight_creative_conflict_populates_expected(connection):
-    truncate_output_table(connection)
     vendor_ids_maps_set_within_flight_conflict_query = """
                     UPDATE vendor_ids.maps SET vendor_id = '12121212' WHERE li_code = 'LI-123456';
                 """
@@ -249,8 +299,7 @@ def test_process_import_id_within_flight_creative_conflict_populates_expected(co
             assert result in standard_output_data_flight_7891011
 
 
-def test_process_flight_id_both_within_and_not_within_flight_creative_conflict_populates_none(connection):
-    truncate_output_table(connection)
+def test_process_li_code_both_within_and_not_within_flight_creative_conflict_populates_none(connection):
     connection.execute("TRUNCATE vendor_ids.maps;")
     connection.execute("TRUNCATE vendor_ids.alignment_conflicts;")
     vendor_ids_maps_insert_within_flight_conflict_query = """
@@ -273,8 +322,7 @@ def test_process_flight_id_both_within_and_not_within_flight_creative_conflict_p
     assert results == set()
 
 
-def test_process_flight_id_with_previous_within_flight_creative_conflict_populates_expected(connection):
-    truncate_output_table(connection)
+def test_process_li_code_with_previous_within_flight_creative_conflict_populates_expected(connection):
     # add previous within flight creative conflict record to output table
     connection.execute("""
                     INSERT INTO {} (date, flight_id, creative_id, impressions, clicks, provider, time_zone, is_deleted)
@@ -290,6 +338,7 @@ def test_process_flight_id_with_previous_within_flight_creative_conflict_populat
 
 
 def test_generate_expected_data_temp_table_processing_id_creates_correct_temp_table(connection):
+    insert_standard_output_data(connection)
     with connection.begin() as transaction:
         temp_table = h.generate_expected_data_temp_table(connection, 'import_id', '1')
         s = select([temp_table.c.date, temp_table.c.flight_id, temp_table.c.creative_id, temp_table.c.impressions, temp_table.c.clicks, temp_table.c.provider, temp_table.c.time_zone, temp_table.c.is_deleted])
@@ -297,6 +346,7 @@ def test_generate_expected_data_temp_table_processing_id_creates_correct_temp_ta
 
 
 def test_calculate_diffs_and_writes_to_output_table_temp_table_and_do_perform_deletions_returns_correct_diffs(connection):
+    insert_standard_output_data(connection)
     with connection.begin() as transaction:
         # build temp table
         connection.execute(""" 
@@ -332,6 +382,7 @@ def test_calculate_diffs_and_writes_to_output_table_temp_table_and_do_perform_de
 
 
 def test_set_lock_timeout_for_transaction_timeout_with_expected_error(engine):
+    insert_standard_output_data(engine.connect())
     locking_connection = engine.connect()
     blocked_connection = engine.connect()
 
@@ -347,6 +398,7 @@ def test_set_lock_timeout_for_transaction_timeout_with_expected_error(engine):
 
 
 def test_upsert_with_unique_key(connection):
+    insert_standard_output_data(connection)
     connection.execute("""
             INSERT INTO {} (date, flight_id, creative_id, impressions, clicks, provider, time_zone, is_deleted) 
             VALUES 
@@ -364,6 +416,7 @@ def test_upsert_with_unique_key(connection):
 
 
 def test_upsert_with_null_creative_id(connection):
+    insert_standard_output_data(connection)
     connection.execute("""
             INSERT INTO {} (date, flight_id, creative_id, impressions, clicks, provider, time_zone, is_deleted) 
             VALUES 
