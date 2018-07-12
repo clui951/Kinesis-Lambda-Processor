@@ -9,8 +9,10 @@ from sqlalchemy.sql.functions import current_timestamp
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+
 def create_new_engine(db_postgres_string, pool_size, max_overflow):
     return create_engine(db_postgres_string, pool_size=pool_size, max_overflow=max_overflow)
+
 
 # Database_helper entrypoint, called by main processor
 def process_processing_id(connection, processing_id_type, processing_id):
@@ -38,6 +40,8 @@ def process_processing_id(connection, processing_id_type, processing_id):
 LOCK_TIMEOUT_MS = 3000
 LOCK_TIMEOUT_QUERY = "SET lock_timeout = {};".format(LOCK_TIMEOUT_MS)
 LOCK_ERROR_MESSAGE = 'lock timeout'
+
+
 def set_lock_timeout_for_transaction(connection):
     connection.execute(LOCK_TIMEOUT_QUERY)
 
@@ -65,6 +69,8 @@ BUILD_EXPECTED_DATA_TEMP_TABLE_BASE_QUERY = """
     group by rd.date, m.li_code, m.creative_rtb_id, im.report_time_zone
     order by date desc;
 """
+
+
 def generate_expected_data_temp_table(connection, processing_id_type, processing_id):
     temp_table_name = TEMP_TABLE_BASE_NAME.format(processing_id.replace("-","")).lower()
     where_clause_string = CONDITION_STRING_BY_PROCESSING_ID_TYPE[processing_id_type].format(processing_id)
@@ -124,6 +130,8 @@ WITHIN_FLIGHT_CREATIVE_CONFLICT_QUERY_CONDITIONS_BY_PROCESSING_ID_TYPE = {
     LI_CODE_STRING : (RELEVANT_ID_MAPS_FOR_LI_CODE, LI_CODE_CONDITION),
     IMPORT_ID_STRING : (RELEVANT_ID_MAPS_FOR_IMPORT_ID, IMPORT_ID_CONDITION)
 }
+
+
 # Inserts records for flights with within flight creative conflicts only
 def insert_within_flight_creative_conflict_data_to_temp_table(connection, temp_table_name, processing_id_type, processing_id):
     conditional_query_tuple = WITHIN_FLIGHT_CREATIVE_CONFLICT_QUERY_CONDITIONS_BY_PROCESSING_ID_TYPE[processing_id_type]
@@ -138,6 +146,8 @@ def insert_within_flight_creative_conflict_data_to_temp_table(connection, temp_t
 # Calculate diffs against final results table
 OUTPUT_SCHEMA = 'snoopy'
 OUTPUT_TABLE = 'delivery_by_flight_creative_day'
+
+
 def calculate_diffs_and_writes_to_output_table(connection, temp_table, flight_ids_affected, perform_deletions):
     flight_ids_affected_string = "(" + ",".join(["'" + str(id) + "'" for id in flight_ids_affected]) + ")"
 
@@ -164,11 +174,12 @@ def calculate_diffs_and_writes_to_output_table(connection, temp_table, flight_id
                             output_table.c.creative_id == temp_table.c.creative_id,
                             output_table.c.creative_id.isnot_distinct_from(temp_table.c.creative_id)
                         ),
-                        output_table.c.date == temp_table.c.date
+                        output_table.c.date == temp_table.c.date,
+                        output_table.c.time_zone == temp_table.c.time_zone
                     )
                 )
             )
-        ).values(is_deleted = True, updated_at = current_timestamp())
+        ).values(is_deleted=True, updated_at=current_timestamp())
         deleted = [dict(row) for row in deleted_query.execute().fetchall()]
 
     # Do updates / insertions together
@@ -179,7 +190,8 @@ def calculate_diffs_and_writes_to_output_table(connection, temp_table, flight_id
                 output_table.c.creative_id == temp_table.c.creative_id,
                 output_table.c.creative_id.isnot_distinct_from(temp_table.c.creative_id)
             ),
-            output_table.c.date == temp_table.c.date
+            output_table.c.date == temp_table.c.date,
+            output_table.c.time_zone == temp_table.c.time_zone
         )
     )
     delete_for_update_query.execute()

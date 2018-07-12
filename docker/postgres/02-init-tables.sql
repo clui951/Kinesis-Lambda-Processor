@@ -107,5 +107,6 @@ CREATE TABLE snoopy.delivery_by_flight_creative_day (
 	updated_at timestamp,
 	is_deleted bool
 );
-CREATE UNIQUE INDEX delivery_3col_unique_idx ON snoopy.delivery_by_flight_creative_day (date, flight_id, creative_id) WHERE creative_id IS NOT NULL;
-CREATE UNIQUE INDEX delivery_2col_unique_idx ON snoopy.delivery_by_flight_creative_day (date, flight_id) WHERE creative_id IS NULL;
+
+CREATE UNIQUE INDEX unique_key_snoopy_delivery_date_flightid_creativeid_timezone ON snoopy.delivery_by_flight_creative_day (date, flight_id, creative_id, time_zone) WHERE creative_id IS NOT NULL;
+CREATE UNIQUE INDEX unique_key_snoopy_delivery_date_flightid_timezone ON snoopy.delivery_by_flight_creative_day (date, flight_id, time_zone) WHERE creative_id IS NULL;
