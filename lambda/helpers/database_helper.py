@@ -33,7 +33,7 @@ def process_processing_id(connection, processing_id_type, processing_id):
             flight_ids_affected = [row[temp_table.c.flight_id] for row in select([temp_table.c.flight_id]).distinct().execute().fetchall()]
             perform_deletions = False
         if not perform_deletions and not flight_ids_affected:
-            # no data in the temp table
+            # processing import_id, but no data in the temp table
             return
 
         deleted, inserted = calculate_diffs_and_writes_to_output_table(connection, temp_table, flight_ids_affected, perform_deletions)
@@ -160,9 +160,28 @@ def insert_within_flight_creative_conflict_data_to_temp_table(connection, temp_t
 # Calculate diffs against final results table
 OUTPUT_SCHEMA = 'snoopy'
 OUTPUT_TABLE = 'delivery_by_flight_creative_day'
+DCM_PROVIDER_STR = 'doubleclick'
 
 
 def calculate_diffs_and_writes_to_output_table(connection, temp_table, flight_ids_affected, perform_deletions):
+    """
+    Calculates deletions and upserts from the temp_table to final output table.
+    Unique key to update on is (flight_id, creative_id, date, provider, time_zone)
+
+    Deletions should only happen if the processing_id is a li_code or flight_id.
+    Deletion step: temporary solution to handle backfilled Sizmek data:
+        - If there is no data in temp table
+            - Mark is_deleted for all of the flight's Doubleclick data
+        - If there is data in temp table
+            - Mark is_deleted for the flight's Doubleclick data that is not in temp table
+        - Sizmek data should never be deleted, as we are not processing any new Sizmek data
+
+    :param connection: Connection object to db
+    :param temp_table: SqlAlchemy table object
+    :param flight_ids_affected: List(String); can be empty
+    :param perform_deletions: Boolean; only true if processing_id_type was li_code/flight_id
+    :return: 2 element tuple, (List(deleted rows), List(inserted rows))
+    """
     flight_ids_affected_string = "(" + ",".join(["'" + str(id) + "'" for id in flight_ids_affected]) + ")"
 
     # Filter warnings due to partial index reflection in SqlAlchemy
@@ -177,23 +196,40 @@ def calculate_diffs_and_writes_to_output_table(connection, temp_table, flight_id
 
     deleted = []
     if perform_deletions:
-        # Do deletions
-        deleted_query = output_table.update().returning(output_table.c.flight_id, output_table.c.creative_id, output_table.c.date).where(
-            and_(
-                output_table.c.flight_id.in_([str(id) for id in flight_ids_affected]),
-                ~exists().where(
+        # Deletions should only be performed when processing_id_type is li_code/flight_id (one flight affected)
+        flight_id_affected = flight_ids_affected[0]
+
+        if not temp_table.select().execute().fetchone():
+            # If no data in temp table, mark is_deleted for all of the flight's Doubleclick data
+            deleted_query = \
+                output_table.update().returning(output_table.c.flight_id, output_table.c.creative_id, output_table.c.date).where(
                     and_(
-                        output_table.c.flight_id == temp_table.c.flight_id,
-                        or_(
-                            output_table.c.creative_id == temp_table.c.creative_id,
-                            output_table.c.creative_id.isnot_distinct_from(temp_table.c.creative_id)
-                        ),
-                        output_table.c.date == temp_table.c.date,
-                        output_table.c.time_zone == temp_table.c.time_zone
+                        output_table.c.flight_id == str(flight_id_affected),
+                        output_table.c.provider == DCM_PROVIDER_STR
                     )
-                )
-            )
-        ).values(is_deleted=True, updated_at=current_timestamp())
+                ).values(is_deleted=True, updated_at=current_timestamp())
+            pass
+        else:
+            # If data in temp table, mark is_deleted for the flight's Doubleclick data
+            deleted_query = \
+                output_table.update().returning(output_table.c.flight_id, output_table.c.creative_id, output_table.c.date).where(
+                    and_(
+                        output_table.c.flight_id == str(flight_id_affected),
+                        ~exists().where(
+                            and_(
+                                output_table.c.flight_id == temp_table.c.flight_id,
+                                or_(
+                                    output_table.c.creative_id == temp_table.c.creative_id,
+                                    output_table.c.creative_id.isnot_distinct_from(temp_table.c.creative_id)
+                                ),
+                                output_table.c.date == temp_table.c.date,
+                                output_table.c.time_zone == temp_table.c.time_zone,
+                                output_table.c.provider == DCM_PROVIDER_STR
+                            )
+                        ),
+                        output_table.c.provider == DCM_PROVIDER_STR
+                    )
+                ).values(is_deleted=True, updated_at=current_timestamp())
         deleted = [dict(row) for row in deleted_query.execute().fetchall()]
 
     # Do updates / insertions together
@@ -205,7 +241,8 @@ def calculate_diffs_and_writes_to_output_table(connection, temp_table, flight_id
                 output_table.c.creative_id.isnot_distinct_from(temp_table.c.creative_id)
             ),
             output_table.c.date == temp_table.c.date,
-            output_table.c.time_zone == temp_table.c.time_zone
+            output_table.c.time_zone == temp_table.c.time_zone,
+            output_table.c.provider == DCM_PROVIDER_STR
         )
     )
     delete_for_update_query.execute()
